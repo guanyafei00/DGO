@@ -1,0 +1,1032 @@
+const { app, BrowserWindow, ipcMain, shell, Tray, Menu, Notification, dialog } = require('electron');
+// README 截图模式需在 app ready 前禁硬件加速（无 GPU/沙箱环境下 GPU 进程会崩）
+if (process.env.DGO_CAPTURE) app.disableHardwareAcceleration();
+const path = require('path');
+const fs = require('fs');
+const os = require('os');
+
+// GPU 崩溃保护：核显/驱动异常机器上降级为软件渲染（实测 0xC0000005 GPU 进程崩溃）
+app.disableHardwareAcceleration();
+
+// autotest 数据隔离：测试绝不读写用户真实数据（曾把测试任务/订阅写进主人 %APPDATA%）
+if (process.env.FETCHIE_AUTOTEST) {
+  app.setPath('userData', path.join(os.tmpdir(), 'dgo-autotest-' + Date.now()));
+}
+
+const identify = require('./lib/identify');
+const { DownloadQueue, configure } = require('./lib/queue');
+const strategy = require('./lib/strategy');
+const autoupdate = require('./lib/autoupdate');
+const store = require('./lib/store');
+const subs = require('./lib/subs');
+const library = require('./lib/library');
+const login = require('./lib/login');
+const settings = require('./lib/settings');
+const asr = require('./lib/asr');
+const { runEngine } = require('./lib/engine_probe');
+const ai = require('./lib/ai');
+const enginesBoot = require('./lib/engines_boot');
+const updateSign = require('./lib/update_sign');
+
+const CHECK_INTERVAL_MS = 10 * 60 * 1000;   // 每站 10 分钟增量检查
+const RULES_INTERVAL_MS = 6 * 3600 * 1000;  // 远程风控规则 6 小时拉一轮
+// 默认规则服务端（静态 JSON，随规则变更直接更新线上文件）；FETCHIE_RULES_URL 环境变量可覆盖
+const RULES_URL = process.env.FETCHIE_RULES_URL || 'https://fetchie-rules.app.workbuddy.host/rules.json';
+let _rulesVersion = null;   // 最近一次成功应用的远程规则版本（UI 展示用）
+
+async function refreshRemoteRules() {
+  try {
+    const j = await strategy.fetchRemoteRules(RULES_URL);
+    const r = strategy.applyRemoteRules(j.rules || [], { version: j.version });
+    _rulesVersion = j.version || null;
+    console.log('[rules] remote rules applied:', r.applied, '/', r.total, 'version:', j.version || '-');
+    return { ok: true, applied: r.applied, total: r.total, version: _rulesVersion };
+  } catch (e) {
+    console.log('[rules] remote fetch fail (沿用上次/内置策略):', e.message);
+    return { ok: false, reason: e.message, version: _rulesVersion };
+  }
+}
+
+function binDir() {
+  // darwin：安装包不带 mac 二进制，首启由 engines_boot 下载到 userData/engines
+  if (process.platform === 'darwin') return path.join(app.getPath('userData'), 'engines');
+  const dev = path.join(__dirname, 'resources', 'bin');
+  if (fs.existsSync(dev)) return dev;
+  return path.join(process.resourcesPath, 'bin');
+}
+
+let win = null;
+let queue = null;
+let tray = null;
+let quitting = false;   // 托盘模式：关窗≠退出，仅托盘菜单「退出」置位
+let minimizeNotices = 0;   // 关窗到托盘的提示只弹前 2 次
+
+function trayIcon() {
+  const dev = path.join(__dirname, 'resources', 'tray.png');
+  return fs.existsSync(dev) ? dev : path.join(process.resourcesPath, 'tray.png');
+}
+
+function appIconPath() {
+  const dev = path.join(__dirname, 'resources', 'app.ico');
+  return fs.existsSync(dev) ? dev : path.join(process.resourcesPath, 'app.ico');
+}
+
+function createTray() {
+  if (tray) return;
+  try {
+    tray = new Tray(trayIcon());
+    tray.setToolTip('DGO — 媒体下载与订阅');
+    tray.setContextMenu(Menu.buildFromTemplate([
+      { label: '显示 DGO', click: () => { if (win) { win.show(); win.focus(); } } },
+      { type: 'separator' },
+      { label: '退出', click: () => { quitting = true; app.quit(); } }
+    ]));
+    tray.on('double-click', () => { if (win) { win.show(); win.focus(); } });
+  } catch (e) {
+    console.error('[tray] create fail (主窗口不受影响):', e.message);
+    tray = null;
+  }
+}
+
+function createWindow() {
+  const capture = !!process.env.DGO_CAPTURE;
+  win = new BrowserWindow({
+    width: 1180, height: 800,
+    minWidth: 940, minHeight: 640,   // 会审 P1：防止缩到极小破版
+    icon: appIconPath(),
+    webPreferences: { preload: path.join(__dirname, 'preload.js') }
+  });
+  win.loadFile('index.html');
+  // README 截图模式：DGO_CAPTURE=1 启动时自动切页截 3 张图后退出（真实数据，发布前主人审阅）
+  // capturePage 在 in-process-gpu 下会挂死 → 兜底走 desktopCapturer 屏幕捕获（OS 层，不依赖 Chromium 合成器）
+  if (capture) {
+    const { desktopCapturer, screen } = require('electron');
+    const withTimeout = (p, ms, tag) => Promise.race([
+      p,
+      new Promise((_res, rej) => setTimeout(() => rej(new Error(tag + ' 超时' + ms + 'ms')), ms))
+    ]);
+    // 屏幕捕获 + 裁出窗口客户区（乘 scaleFactor 适配 DPI）
+    async function captureShot() {
+      win.show(); win.focus();
+      const d = screen.getDisplayMatching(win.getBounds());
+      const sf = d.scaleFactor || 1;
+      const sources = await withTimeout(desktopCapturer.getSources({
+        types: ['screen'],
+        thumbnailSize: { width: Math.round(d.size.width * sf), height: Math.round(d.size.height * sf) }
+      }), 10000, 'getSources');
+      if (!sources.length) throw new Error('desktopCapturer 无屏幕源');
+      const b = win.getContentBounds();
+      const img = sources[0].thumbnail.crop({
+        x: Math.round((b.x - d.bounds.x) * sf),
+        y: Math.round((b.y - d.bounds.y) * sf),
+        width: Math.round(b.width * sf),
+        height: Math.round(b.height * sf)
+      });
+      if (img.isEmpty()) throw new Error('截到空帧');
+      return img;
+    }
+    win.webContents.on('render-process-gone', (_e, d) => console.error('[capture] render-gone', JSON.stringify(d)));
+    win.webContents.on('did-fail-load', (_e, code, desc) => console.error('[capture] did-fail-load', code, desc));
+    win.webContents.once('did-finish-load', () => {
+      console.log('[capture] did-finish-load 进入截图流程');
+      const fsx = require('fs');
+      const outDir = path.join(__dirname, '..', 'screenshots');
+      fsx.mkdirSync(outDir, { recursive: true });
+      const withTimeout = (p, ms, tag) => Promise.race([
+        p,
+        new Promise((_res, rej) => setTimeout(() => rej(new Error(tag + ' 超时' + ms + 'ms')), ms))
+      ]);
+      const shots = [['dgo-library.png', 'lib'], ['dgo-subs.png', 'rss'], ['dgo-home.png', 'tasks']];
+      (async () => {
+        try {
+          await new Promise(r2 => setTimeout(r2, 2500));   // 等首屏数据渲染
+          for (const [file, page] of shots) {
+            console.log('[capture] 切页 →', page);
+            await withTimeout(win.webContents.executeJavaScript(`switchPage('${page}')`), 10000, 'switchPage(' + page + ')');
+            await new Promise(r2 => setTimeout(r2, 1800));   // 等该页数据加载
+            let img = null;
+            try {
+              img = await withTimeout(win.webContents.capturePage(), 6000, 'capturePage');
+            } catch (ce) {
+              console.warn('[capture] capturePage 失败（预期内），改走屏幕捕获:', ce.message);
+              img = await captureShot();
+            }
+            if (!img || img.isEmpty()) throw new Error(page + ' 无可用帧');
+            fsx.writeFileSync(path.join(outDir, file), img.toPNG());
+            console.log('[capture] OK', file, fsx.statSync(path.join(outDir, file)).size, 'bytes');
+          }
+          console.log('[capture] ALL-DONE');
+        } catch (e) { console.error('[capture] FAIL:', e.message); }
+        app.quit();
+      })();
+    });
+    // 看门狗：90 秒无论如何退出，绝不挂死
+    setTimeout(() => { console.error('[capture] watchdog 90s 强制退出'); app.exit(1); }, 90000);
+  }
+  // 导航锁（会审 P1）：渲染层失守也不许导航去外站——preload 不在外部页面重新注入，IPC 暴露面收住
+  win.webContents.on('will-navigate', (e, url) => { if (!url.startsWith('file://')) e.preventDefault(); });
+  win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  // 右键菜单（Electron 默认无）：输入框/可编辑区提供 剪切/复制/粘贴/全选（主人反馈：粘贴栏不支持右键粘贴）
+  win.webContents.on('context-menu', (e, params) => {
+    if (!params.isEditable) return;
+    e.preventDefault();
+    Menu.buildFromTemplate([
+      { role: 'undo', label: '撤销' },
+      { role: 'redo', label: '重做' },
+      { type: 'separator' },
+      { role: 'cut', label: '剪切' },
+      { role: 'copy', label: '复制' },
+      { role: 'paste', label: '粘贴' },
+      { type: 'separator' },
+      { role: 'selectAll', label: '全选' }
+    ]).popup({ window: win });
+  });
+  // 托盘常驻：点关闭 = 弹窗问「最小化到托盘」还是「直接退出」（勾选记住后不再问）
+  win.on('close', async e => {
+    if (quitting) return;
+    if (!tray) { quitting = true; app.quit(); return; }   // 托盘创建失败降级：关窗即退出，防「不可见又退不出」
+    const act = settings.get().closeAction;   // 'minimize' | 'exit' | 未设置
+    if (act === 'exit') return;               // 已记住「直接退出」：放行关闭
+    e.preventDefault();
+    if (act === 'minimize') { win.hide(); return; }   // 已记住「最小化」：直接隐藏
+    const { response, checkboxChecked } = await dialog.showMessageBox(win, {
+      type: 'question',
+      title: '关闭 DGO',
+      message: '要最小化到托盘还是直接退出？',
+      detail: '最小化到托盘：订阅检查与下载继续在后台运行；直接退出：结束所有任务。',
+      buttons: ['最小化到托盘', '直接退出'],
+      defaultId: 0, cancelId: 0,
+      checkboxLabel: '记住我的选择，不再询问',
+      checkboxChecked: false,
+      noLink: true
+    });
+    if (response === 0) {
+      win.hide();
+      if (checkboxChecked) { settings.set({ closeAction: 'minimize' }); }
+      if (Notification.isSupported() && minimizeNotices++ < 2) {
+        const n = new Notification({ title: 'DGO 已最小化到托盘', body: '订阅检查与下载仍在后台运行，右键托盘图标可退出', silent: true });
+        n.show();
+      }
+    } else {
+      if (checkboxChecked) settings.set({ closeAction: 'exit' });
+      quitting = true;
+      app.quit();
+    }
+  });
+  return win;
+}
+
+// 单实例锁：托盘常驻后双击图标容易重复启动
+const gotLock = app.requestSingleInstanceLock();
+if (!gotLock) { app.quit(); } else {
+app.on('second-instance', () => { if (win) { if (win.isMinimized()) win.restore(); win.show(); win.focus(); } });
+
+app.whenReady().then(() => {
+  const userData = app.getPath('userData');
+
+  // 改名迁移：Fetchie → DGO，旧 %APPDATA%\Fetchie 的数据一次性搬入（会审 P1 加固：
+  // 逐文件断点续迁 + 完成写标记 + 旧目录改名封存（内含明文 cookies.txt，凭证不散落））
+  try {
+    const legacy = path.join(path.dirname(userData), 'Fetchie');
+    const doneMark = path.join(userData, '.fetchie-migrate-done');
+    if (fs.existsSync(legacy) && !fs.existsSync(doneMark)) {
+      let copied = 0;
+      for (const f of ['settings.json', 'cookies.txt', 'tasks.json', 'subs.json', 'site-state.json', 'remote-rules.json']) {
+        const s = path.join(legacy, f), d = path.join(userData, f);
+        if (fs.existsSync(s) && !fs.existsSync(d)) {
+          try { fs.copyFileSync(s, d); copied++; } catch (e) { console.warn('[migrate] copy fail:', f, e.message); }
+        }
+      }
+      const oldModels = path.join(legacy, 'asr-models');
+      const newModels = path.join(userData, 'asr-models');
+      if (fs.existsSync(oldModels) && !fs.existsSync(newModels)) {
+        try { fs.renameSync(oldModels, newModels); copied++; }   // 同盘改名瞬间完成
+        catch (e) { console.warn('[migrate] asr-models rename fail（不做同步大拷贝防冻启动，稍后手动迁）:', e.message); }
+      }
+      try { fs.writeFileSync(doneMark, String(Date.now())); } catch (e) {}
+      try { fs.renameSync(legacy, legacy + '.migrated-bak'); }   // 封存旧目录
+      catch (e) { try { fs.unlinkSync(path.join(legacy, 'cookies.txt')); } catch (e2) {} }   // 改名不成至少删明文凭证
+      console.log('[migrate] Fetchie → DGO 数据迁移完成:', copied, '项');
+    }
+  } catch (e) { console.log('[migrate] 迁移失败(不影响启动):', e.message); }
+
+  // 默认下载目录：系统「视频」文件夹下的 DGO（会审 P0：藏 AppData 用户找不到文件）。
+  // 已有 settings.json 的老用户不受影响（其 outDir 优先）。
+  let videosDir = null;
+  try { videosDir = app.getPath('videos'); } catch (e) {}
+  settings.configure({ file: path.join(userData, 'settings.json'), defaultOutDir: path.join(videosDir || userData, 'DGO') });
+  const sc = settings.get();
+  ai.configure({ url: sc.aiUrl, key: sc.aiKey, model: sc.aiModel });   // BYOK：OpenAI 兼容接口
+  const outDir = settings.get().outDir;   // 下载目录：settings.json 可覆盖默认 userData/downloads
+  fs.mkdirSync(outDir, { recursive: true });
+
+  // cookie 文件：登录后写 userData/cookies.txt（打包态 resources 在 asar 内不可写）。
+  // 旧版 resources/cookies.txt 存在则一次性迁移。configure 传固定路径——登录成功后文件出现，下游引擎自动带上（existsSync 动态判断）。
+  const cookiePath = path.join(userData, 'cookies.txt');
+  const legacyCookie = path.join(__dirname, 'resources', 'cookies.txt');
+  if (!fs.existsSync(cookiePath) && fs.existsSync(legacyCookie)) {
+    try { fs.copyFileSync(legacyCookie, cookiePath); } catch (e) {}
+  }
+
+  configure({ binDir: binDir(), cookiePath, outDir, proxy: settings.get().proxy });
+  identify.setBinDir(binDir());
+  identify.setCookiePath(cookiePath);   // 会审 P1：登录后识别探针也带 cookie（原先断链，登录对识别无效）
+  identify.setProxy(settings.get().proxy);
+  strategy.configure({ stateFile: path.join(userData, 'site-state.json') });
+  refreshRemoteRules();
+  setInterval(refreshRemoteRules, RULES_INTERVAL_MS);
+  autoupdate.configure({ binDir: binDir() });
+  store.configure({ userData });
+  subs.configure({ binDir: binDir(), cookiePath, file: path.join(userData, 'subs.json') });
+  library.configure({ outDir });
+  asr.configure({
+    binDir: binDir(), modelsDir: path.join(userData, 'asr-models'),
+    onPersist: patch => settings.set(patch)   // 默认模型持久化到 settings.json
+  });
+  asr.restoreActive(settings.get().asrModel);   // 恢复上次选的默认模型
+
+  // 转写串行队列：同一时间只跑一个 whisper，避免 CPU 打爆
+  let asrChain = Promise.resolve();
+  const _asrDownloading = new Set();
+  function enqueueTranscribe(mediaPath, source) {
+    asrChain = asrChain.then(() => asr.transcribe(mediaPath, {
+      onProgress: pct => { if (win && !win.isDestroyed()) win.webContents.send('asr:progress', { filePath: mediaPath, pct, source }); }
+    })).then(r => {
+      if (win && !win.isDestroyed()) win.webContents.send('asr:done', { filePath: mediaPath, ...r });
+      if (win && !win.isDestroyed()) win.webContents.send('library:changed');
+      if ((!win.isVisible() || win.isMinimized()) && Notification.isSupported()) {
+        const n = new Notification({ title: '转写完成 ✓', body: path.basename(mediaPath), silent: false });
+        n.on('click', () => { if (win) { win.show(); win.focus(); } });
+        n.show();
+      }
+      return r;
+    }).catch(e => {
+      if (win && !win.isDestroyed()) win.webContents.send('asr:error', { filePath: mediaPath, reason: e.message });
+      return null;
+    });
+    return asrChain;
+  }
+
+  // 恢复标记：恢复时已存在的 done 任务不算「新完成」（不触发媒体库刷新）
+  const resumedDone = new Set();
+
+  queue = new DownloadQueue(snapshot => {
+    if (win && !win.isDestroyed()) win.webContents.send('queue:snapshot', snapshot);
+    store.save(snapshot);          // 每次状态变化持久化
+    // 媒体库自动刷新：有任务新进 done（排除恢复的存量）
+    let freshDone = false;
+    const doneTitles = [];
+    for (const t of snapshot) {
+      if (t.status === 'done' && !resumedDone.has(t.id)) { resumedDone.add(t.id); freshDone = true; doneTitles.push(t.title); }
+    }
+      if (freshDone && win && !win.isDestroyed()) {
+        win.webContents.send('library:changed');
+        // 完成通知 + 自动转写：仅窗口隐藏/最小化时弹通知（前台时不打扰）；body 带保存位置（会审 P0-1 配套）
+        if ((!win.isVisible() || win.isMinimized()) && Notification.isSupported()) {
+          const n = new Notification({
+            title: freshDone === 1 ? '下载完成 ✓' : `下载完成 ✓（${freshDone} 个任务）`,
+            body: doneTitles[0] + (freshDone > 1 ? ` 等 ${freshDone} 个` : '') + '\n保存在：' + settings.get().outDir,
+            silent: false
+          });
+          n.on('click', () => { if (win) { win.show(); win.focus(); } });
+          n.show();
+        }
+      // 勾了「转写」的任务：下载完成自动转写产物（视频/音频都可，whisper 吃 ffmpeg 提的音轨）
+      for (const t of snapshot) {
+        if (t.status === 'done' && t._transcribe && t.filePath && !t._transcribed) {
+          t._transcribed = true;   // 防重复
+          enqueueTranscribe(t.filePath, 'task');
+        }
+      }
+    }
+  });
+
+  // 恢复上次未完成的任务：downloading 中断 → error（可重试），queued → 重新排队
+  for (const raw of store.load()) {
+    if (raw.status === 'downloading') { raw.status = 'queued'; raw.error = '应用退出中断，已自动重排'; raw.progress = 0; }
+    if (raw.status === 'held') raw.status = 'queued';
+    if (raw.status === 'queued') {
+      const item = queue.add(raw.url, { engine: raw.engine, title: raw.title, _range: raw._range, _subs: raw._subs, _audio: raw._audio, _transcribe: raw._transcribe });
+      item.filePath = raw.filePath; item.fileCount = raw.fileCount;
+    } else {
+      queue.items.set(raw.id, raw);
+      queue.order.push(raw.id);
+      if (raw.status === 'done') resumedDone.add(raw.id);
+    }
+  }
+
+  // 订阅改名 → 队列历史任务标题同步（老任务入队时还带着「订阅 N」占位名，改名后追平）
+  subs.onNameChange((id, name) => {
+    const n = queue.renameSub(id, name);
+    if (n && win && !win.isDestroyed()) win.webContents.send('queue:snapshot', queue.snapshot());
+  });
+
+  // 发布闸门②配套：安装包不捆绑 gallery-dl（GPL-3.0）与 ffmpeg，首启在线引导下载
+  // win：下载 gallery-dl.exe + ffmpeg.exe 到 userData/engines；mac：三件套到 userData/engines
+  enginesBoot.ensureEngines(binDir()).then(r => {
+    if (r && r.installed && r.installed.length) {
+      console.log(`[boot] ${process.platform} engines installed:`, r.installed.join(', '));
+      toastMsg('首次运行：已下载必需组件 ' + r.installed.join('、') + '，功能全部可用');
+    }
+    if (r && !r.ok) {
+      const bad = Object.keys(r).filter(k => !['ok', 'installed'].includes(k)).map(k => k + ': ' + r[k]).join('; ');
+      console.warn('[boot] engines partial fail:', bad);
+      toastMsg('部分组件联网下载失败（' + bad.slice(0, 80) + '）。会自动换源重试；也可重启软件再试，或在设置页「从本地文件安装引擎」');
+    }
+  }).catch(e => {
+    console.warn('[boot] engines:', e.message);
+    toastMsg('联网下载组件失败：' + (e.message || e).slice(0, 80) + '。重启软件可重试');
+  });
+
+  // 引擎自检
+  ipcMain.handle('engine:probe', async () => runEngine(binDir()));
+
+  // 手动导入引擎（下载兜底：自动源全挂时，用户从官方页手动下载后本地安装）
+  ipcMain.handle('engine:pickLocal', async (e, { engine }) => {
+    const name = String(engine || '').replace(/[^a-zA-Z0-9._-]/g, '');
+    if (!name) return { ok: false, reason: '引擎名不合法' };
+    const r = await dialog.showOpenDialog(win, {
+      title: '选择引擎文件（' + name + '；ffmpeg 可选官方 zip 包）',
+      filters: [{ name: '引擎文件', extensions: ['exe', 'zip'] }],
+      properties: ['openFile'],
+    });
+    if (r.canceled || !r.filePaths[0]) return { ok: false, reason: '已取消' };
+    const src = r.filePaths[0];
+    const dest = path.join(binDir(), name);
+    try {
+      if (/\.zip$/i.test(src)) {
+        await enginesBoot.winExpand(src, binDir());
+        if (!fs.existsSync(dest)) return { ok: false, reason: 'zip 内未找到 ' + name };
+      } else {
+        fs.copyFileSync(src, dest);
+      }
+      return { ok: true, dest };
+    } catch (e2) { return { ok: false, reason: String(e2.message || e2) }; }
+  });
+
+  // 引擎更新（风控对抗第一防线）
+  ipcMain.handle('engine:checkUpdate', async () => autoupdate.checkAll());
+  ipcMain.handle('engine:applyUpdate', async (e, { engine, url }) => {
+    if (queue.active > 0) return { ok: false, reason: '队列运行中，等任务完成后更新' };
+    return autoupdate.updateEngine(engine, url);
+  });
+
+  // ===== 引擎自动更新：启动 5 分钟后 + 每 24 小时，仅在队列空闲时静默更新 =====
+  async function engineAutoUpdateOnce() {
+    if (process.platform !== 'win32') return;   // mac 引擎走 engines_boot，无 exe 资产可更
+    if (settings.get().engineAutoUpdate === false) return;
+    const busy = queue.active > 0 || [...queue.items.values()].some(x => ['queued', 'downloading'].includes(x.status));
+    if (busy) return;
+    const list = await autoupdate.checkAll().catch(() => null);
+    if (!list) return;
+    for (const u of list.filter(x => x.needUpdate)) {
+      try {
+        const r = await autoupdate.updateEngine(u.engine, u.url);
+        toastMsg(`${u.engine.replace('.exe', '')} 引擎已自动更新 → ${r.newVersion}`);
+      } catch (e) { /* 静默失败，下轮再试 */ }
+    }
+  }
+  setTimeout(() => { engineAutoUpdateOnce(); setInterval(() => engineAutoUpdateOnce(), 24 * 3600 * 1000); }, 5 * 60 * 1000);
+
+  // ===== 软件自身更新（手动检查 + 启动自动检查）=====
+  function cmpVer(a, b) {
+    const pa = String(a || '').replace(/^v/, '').split('.').map(Number);
+    const pb = String(b || '').replace(/^v/, '').split('.');
+    for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+      const x = pa[i] || 0, y = pb[i] || 0;
+      if (x > y) return 1;
+      if (x < y) return -1;
+    }
+    return 0;
+  }
+  async function appCheckUpdate() {
+    const updateUrl = settings.get().updateUrl;
+    if (!updateUrl) return { ok: false, reason: '未配置更新源（设置页填写 updateUrl 后可用）' };
+    const j = await autoupdate.getJsonPublic(updateUrl);
+    const remote = j.version;
+    if (!remote) return { ok: false, reason: '更新源格式错误（需要 {"version":"x.y.z","url":"安装包下载地址"}）' };
+    // 发布闸门③：更新清单必须带 Ed25519 签名，验证失败一律拒绝（防更新通道劫持 = 持久化 RCE）
+    if (!updateSign.verify(j)) return { ok: false, reason: '更新清单签名校验失败（非官方发布或被篡改），已拒绝' };
+    const hasUpdate = cmpVer(remote, app.getVersion()) > 0;
+    return { ok: true, hasUpdate, version: remote, current: app.getVersion(), url: j.url || '', notes: j.notes || '', sha256: j.sha256 || '' };
+  }
+  function toastMsg(msg) {
+    if (win && !win.isDestroyed()) win.webContents.send('toast:event', { msg });
+  }
+  ipcMain.handle('app:version', () => app.getVersion());
+  ipcMain.handle('app:checkUpdate', () => appCheckUpdate());
+  // 下载新版安装包 → 静默安装到当前目录 → 自动重启（NSIS /S /D=）
+  ipcMain.handle('app:applyUpdate', async (e, { url, sha256 }) => {
+    if (typeof url !== 'string' || !/^https:\/\//i.test(url)) return { ok: false, reason: '更新地址必须为 https' };
+    if (queue.active > 0 || [...queue.items.values()].some(x => ['queued', 'downloading'].includes(x.status)))
+      return { ok: false, reason: '队列还有任务，完成或清空后再更新软件' };
+    const inst = path.join(os.tmpdir(), 'dgo-setup-' + Date.now() + '.exe');
+    await autoupdate.downloadPublic(url, inst);
+    const size = fs.existsSync(inst) ? fs.statSync(inst).size : 0;
+    if (size < 10 * 1024 * 1024) { try { fs.unlinkSync(inst); } catch (e2) {} return { ok: false, reason: '安装包异常（' + Math.round(size / 1048576) + 'MB），已取消' }; }
+    // 发布闸门③：安装包 sha256 与签名清单核对，不一致即销毁
+    if (!updateSign.sha256ok(inst, sha256)) {
+      try { fs.unlinkSync(inst); } catch (e2) {}
+      return { ok: false, reason: '安装包哈希校验失败（可能被篡改或下载损坏），已取消安装' };
+    }
+    const dir = path.dirname(process.execPath);
+    const child = spawn(inst, ['/S', '/D=' + dir], { detached: true, stdio: 'ignore' });
+    child.unref();
+    setTimeout(() => app.quit(), 1500);   // 给安装器起跑时间后退出
+    return { ok: true };
+  });
+  // 更新源配置（只许写 updateUrl 字段，防 renderer 被攻破时改其它配置）
+  ipcMain.handle('settings:setUpdateUrl', (e, { url }) => { settings.set({ updateUrl: String(url || '').trim() }); return { ok: true }; });
+  ipcMain.handle('settings:setEngineAuto', (e, { on }) => { settings.set({ engineAutoUpdate: !!on }); return { ok: true }; });
+  // 启动 30 秒后自动检查软件更新（可在 settings.json 关：appAutoUpdate=false）
+  setTimeout(async () => {
+    if (settings.get().appAutoUpdate === false) return;
+    const r = await appCheckUpdate().catch(() => null);
+    if (r && r.ok && r.hasUpdate) toastMsg(`发现新版本 DGO ${r.version}（当前 ${r.current}）— 设置页可一键更新`);
+  }, 30 * 1000);
+
+
+  // 策略快照（UI 显示各站风控档位）
+  ipcMain.handle('strategy:snapshot', () => strategy.snapshot());
+  // 手动立即更新远程风控规则（UI「⟳ 更新策略」按钮）
+  ipcMain.handle('strategy:refresh', () => refreshRemoteRules());
+  ipcMain.handle('strategy:version', () => ({ version: _rulesVersion, url: RULES_URL }));
+
+  // 识别 / 队列
+  ipcMain.handle('link:identify', async (e, url) => identify.identify(url));
+  ipcMain.handle('queue:add', async (e, { urls, opts }) => {
+    const added = [];
+    const duplicates = [];
+    const invalid = [];
+    for (const url of (Array.isArray(urls) ? urls : [urls])) {
+      if (!url || !url.trim()) continue;
+      const meta = await identify.identify(url.trim());
+      if (meta.engine === 'invalid') {   // 会审 P2：识别失败的链接不再入队跑一遍注定失败的任务
+        invalid.push({ url: url.trim(), reason: meta.reason || '无法识别' });
+        continue;
+      }
+      const item = queue.add(url.trim(), { ...meta, _subs: !!(opts && opts.subs), _audio: !!(opts && opts.audio), _transcribe: !!(opts && opts.trans) });
+      if (!item) continue;
+      if (item.duplicate) duplicates.push(url.trim());
+      else added.push(item.id);
+    }
+    return { added, duplicates, invalid };
+  });
+  ipcMain.handle('queue:cancel', (e, { id }) => queue.cancel(id));
+  ipcMain.handle('queue:retry', (e, { id }) => queue.retry(id));
+  // 删除任务记录（不动磁盘文件）/ 清空全部已完-失败记录
+  ipcMain.handle('queue:remove', (e, { id }) => queue.remove(id));
+  ipcMain.handle('queue:clearFinished', () => queue.clearFinished());
+  ipcMain.handle('queue:snapshot', () => queue.snapshot());
+  ipcMain.handle('app:outDir', () => settings.get().outDir);
+
+  // ===== 设置 =====
+  ipcMain.handle('settings:get', () => settings.get());
+  ipcMain.handle('settings:pickDir', async () => {
+    // 不绑主窗口（窗口可能处于托盘隐藏状态导致对话框弹不出），用顶层对话框
+    if (win && !win.isDestroyed()) { win.show(); win.focus(); }
+    const r = await dialog.showOpenDialog({ properties: ['openDirectory', 'createDirectory'], title: '选择下载保存目录', defaultPath: settings.get().outDir });
+    if (r.canceled || !r.filePaths.length) return { ok: false, reason: '已取消' };
+    const dir = r.filePaths[0];
+    const v = settings.validateDir(dir);
+    if (!v.ok) return { ok: false, reason: '目录不可写：' + v.reason };
+    const s = settings.set({ outDir: dir });
+    // 即时切换新任务的输出目录（运行中任务沿用开始时的目录）。
+    // 注意：调模块级 configure（只会更新 OUTDIR），不能调实例 queue.configure——DownloadQueue 没有该方法（会审 P0 实锤）
+    configure({ outDir: dir });
+    library.configure({ outDir: dir });
+    return { ok: true, outDir: s.outDir };
+  });
+  // 网络代理（YouTube 等被墙站点必需）：即时生效于探针/下载引擎/订阅检查
+  ipcMain.handle('settings:setProxy', (e, { proxy }) => {
+    const p = String(proxy || '').trim();
+    if (p && !/^https?:\/\/\S+|^socks5:\/\/\S+/i.test(p)) return { ok: false, reason: '格式示例：http://127.0.0.1:7890 或 socks5://127.0.0.1:7890' };
+    settings.set({ proxy: p });
+    configure({ proxy: p });
+    identify.setProxy(p);
+    subs.setProxy(p);
+    return { ok: true, proxy: p };
+  });
+
+  // ===== Cookie 管理（多站点通用，Netscape 格式合并导入）=====
+  function cookieFile() { return path.join(userData, 'cookies.txt'); }
+  ipcMain.handle('cookie:info', () => {
+    const domains = new Set();
+    try {
+      for (const line of fs.readFileSync(cookieFile(), 'utf-8').split('\n')) {
+        const p = line.replace(/^#HttpOnly_/, '').split('\t');
+        if (p.length >= 7 && p[0].trim().startsWith('.')) domains.add(p[0].trim());
+      }
+    } catch (e) {}
+    return { file: cookieFile(), domains: [...domains].sort() };
+  });
+  ipcMain.handle('cookie:import', async () => {
+    if (win && !win.isDestroyed()) { win.show(); win.focus(); }
+    const r = await dialog.showOpenDialog({ properties: ['openFile'], title: '选择导出的 cookies.txt（Netscape 格式）', filters: [{ name: 'cookies.txt', extensions: ['txt'] }] });
+    if (r.canceled || !r.filePaths.length) return { ok: false, reason: '已取消' };
+    const target = cookieFile();
+    // 合并：现有 cookie 为底，导入的按 (domain, path, name) 覆盖 → B 站登录态不会被误删
+    const map = new Map();
+    const readNetscape = file => {
+      let text = '';
+      try { text = fs.readFileSync(file, 'utf-8'); } catch (e) { return; }
+      for (const raw of text.split('\n')) {
+        let line = raw.trim();
+        if (!line) continue;
+        const httpOnly = line.startsWith('#HttpOnly_');
+        if (line.startsWith('#') && !httpOnly) continue;   // 跳过注释（#HttpOnly_ 是合法 cookie）
+        const body = (httpOnly ? line.slice('#HttpOnly_'.length) : line).split('\t');
+        if (body.length >= 7) map.set(body[0] + '|' + body[2] + '|' + body[5], (httpOnly ? '#HttpOnly_' : '') + body.join('\t'));
+      }
+    };
+    readNetscape(target);
+    readNetscape(r.filePaths[0]);
+    try { fs.writeFileSync(target, [...map.values()].join('\n') + '\n'); }
+    catch (e) { return { ok: false, reason: e.message }; }
+    return { ok: true, count: map.size };
+  });
+  ipcMain.handle('cookie:openDir', () => {
+    const f = cookieFile();
+    if (!fs.existsSync(f)) { fs.writeFileSync(f, '# Netscape HTTP Cookie File\n'); }
+    shell.showItemInFolder(f);
+    return { ok: true };
+  });
+
+  // ===== 媒体库（只读索引，永不删除文件）=====
+  ipcMain.handle('library:scan', () => library.scan());
+  // 路径必须落在下载目录内（会审 P1：startsWith 前缀匹配可被 downloads-evil 同前缀路径绕过，改 path.relative）
+  // 目录本身也放行（rel === ''）：订阅卡片的「打开下载文件夹」用
+  function insideOutDir(p) {
+    const outDir = path.resolve(settings.get().outDir).toLowerCase();
+    const resolved = path.resolve(String(p || ''));
+    const rel = path.relative(outDir, resolved.toLowerCase());
+    return (rel === '' || (rel && !rel.startsWith('..') && !path.isAbsolute(rel))) ? resolved : null;
+  }
+  // ===== AI 文稿后处理（BYOK：任意 OpenAI 兼容接口，key 存本地 settings.json）=====
+  ipcMain.handle('ai:getConfig', () => {
+    const c = settings.get();
+    return { url: c.aiUrl || '', key: c.aiKey || '', model: c.aiModel || '', ready: ai.ready() };
+  });
+  ipcMain.handle('ai:saveConfig', (e, cfg) => {
+    settings.set({ aiUrl: String(cfg.url || '').trim(), aiKey: String(cfg.key || '').trim(), aiModel: String(cfg.model || '').trim() });
+    const c = settings.get();
+    ai.configure({ url: c.aiUrl, key: c.aiKey, model: c.aiModel });
+    return { ok: true, ready: ai.ready() };
+  });
+  // 对已转写的媒体文件跑 AI：读同名 .txt（或 .srt），结果存同名 .ai.md
+  ipcMain.handle('ai:run', async (e, { p, task }) => {
+    try {
+      const base = String(p || '').replace(/\.[^.]+$/, '');
+      const src = [base + '.txt', base + '.srt'].find(f => fs.existsSync(f));
+      if (!src) return { ok: false, reason: '先转写出文字稿（📝）再跑 AI' };
+      const text = fs.readFileSync(src, 'utf-8');
+      const out = await ai.run(task, text);
+      const outFile = base + '.ai.md';
+      fs.writeFileSync(outFile, out);
+      if (win && !win.isDestroyed()) win.webContents.send('library:changed');
+      return { ok: true, text: out, file: outFile };
+    } catch (err) { return { ok: false, reason: String(err.message || err).slice(0, 200) }; }
+  });
+
+  // 打开外部链接（订阅「源头已删除」明细点回源用）：白名单域名，防渲染层被诱导开任意 URL
+  ipcMain.handle('app:openExternal', (e, url) => {
+    if (!/^https:\/\/[\w.-]*?(bilibili\.com|x\.com|twitter\.com|youtube\.com|pixiv\.net|weibo\.com|danbooru\.donmai\.us|gelbooru\.com|yande\.re|konachan\.(?:com|net)|artstation\.com|deviantart\.com|imgur\.com|flickr\.com|pinterest\.\w+|tumblr\.com|reddit\.com|tiktok\.com|instagram\.com)\//.test(String(url || ''))) {
+      return { ok: false, reason: '非白名单链接' };
+    }
+    shell.openExternal(url);
+    return { ok: true };
+  });
+
+  // 打开文件夹/定位文件：只允许操作下载目录内部的路径（防任意路径注入）
+  ipcMain.handle('app:openFolder', (e, p) => {
+    const resolved = insideOutDir(p);
+    if (!resolved) return { ok: false, reason: '只允许打开下载目录内的路径' };
+    let st = null;
+    try { st = fs.statSync(resolved); } catch { return { ok: false, reason: '路径不存在' }; }
+    if (st.isFile()) { shell.showItemInFolder(resolved); return { ok: true }; }
+    return shell.openPath(resolved).then(err => err ? { ok: false, reason: err } : { ok: true });
+  });
+
+  // ===== 订阅（RSS）=====
+  let _checkingSubs = false;   // 会审 P1：轮次互斥，防定时轮与手动检查并发（knownIds 竞态/重复入队）
+  // 订阅关键词过滤：kw 为空=全收；否则标题/文件名含任一关键词才入队（known 照常记录，不影响增量比对）
+  function kwMatch(sub, text) {
+    if (!sub.kw || !sub.kw.length) return true;
+    const t = String(text || '').toLowerCase();
+    return sub.kw.some(k => t.includes(String(k).toLowerCase()));
+  }
+  async function checkAllSubs(onlyId = null) {
+    if (_checkingSubs) return [];
+    _checkingSubs = true;
+    try {
+      const results = [];
+      for (const sub of subs.list()) {
+        if (onlyId && sub.id !== onlyId) continue;
+        const real = subs.get(sub.id);
+        if (real.paused) { results.push({ id: sub.id, ok: false, reason: '已暂停（连续失败）' }); continue; }
+        try {
+          const gdlSeqs = [];   // gallery-dl 型订阅：新内容只有序号没有独立 URL，先收集再合并连续段
+          const r = await subs.checkSub(real, (s, it) => {
+            if (it.type === 'text') return;   // 纯文字动态无媒体，只记录不入队
+            if (!kwMatch(real, it.text)) return;   // 关键词不匹配：记 known 但不入队
+            if (it.type === 'gdl') { gdlSeqs.push(it.seq); return; }
+            const engine = it.type === 'video' ? 'yt-dlp' : 'gallery-dl';
+            queue.add(subs.itemUrl(s, it), { engine, title: `[订阅] ${s.name} · ${it.text || it.type}`, _subId: s.id });
+          });
+          // gdl 新内容：连续序号合并成 range 段（如 1,2,3,7 → 1-3 与 7 两段），gallery-dl 按段拉取
+          if (gdlSeqs.length) {
+            gdlSeqs.sort((a, b) => a - b);
+            const runs = [];
+            for (const q of gdlSeqs) {
+              const last = runs[runs.length - 1];
+              if (last && q === last[1] + 1) last[1] = q; else runs.push([q, q]);
+            }
+            for (const [a, b] of runs) {
+              queue.add(real.url, { engine: 'gallery-dl', _range: a === b ? String(a) : `${a}-${b}`,
+                title: `[订阅] ${real.name} · 新内容 #${a}${b !== a ? '-' + b : ''}`, _subId: real.id });
+            }
+          }
+          real.failStreak = 0;
+          if (real.kind === 'gdl' || real.kind === 'x') subs.refreshName(real.id);   // 占位名补救（老订阅/缺 cookie 时期加的）
+          // 新订阅自动全量（主人需求：订阅=要全部）：首检建好基线就自动回溯；
+          // 队列忙/失败不清标记，下轮检查（10 分钟）自动重试，成功才落盘清除
+          if (real.autoBackfill && r.ok) {
+            runBackfill(real).then(r2 => {
+              if (r2 && r2.ok) { real.autoBackfill = false; subs.save(); }
+            }).catch(() => {});
+          }
+          results.push({ id: sub.id, name: sub.name, ...r });
+        } catch (e) {
+          real.failStreak = (real.failStreak || 0) + 1;
+          if (real.failStreak >= 3) { real.paused = true; subs.save(); }   // 连续 3 轮失败暂停，防风控硬撞（状态落盘）
+          results.push({ id: sub.id, name: sub.name, ok: false, reason: String(e.message).slice(0, 120) });
+        }
+      }
+      if (win && !win.isDestroyed()) win.webContents.send('subs:changed', subs.list());
+      return results;
+    } finally { _checkingSubs = false; }
+  }
+  ipcMain.handle('subs:list', () => subs.list());
+  ipcMain.handle('subs:add', (e, { url, name }) => {
+    const r = subs.add(url, name);
+    // 添加即检查：首检建基线 → 自动全量回溯立刻开跑（不等 10 分钟轮询）
+    if (r.ok) checkAllSubs(r.sub.id).catch(() => {});
+    return r;
+  });
+  // 关键词过滤设置（空=全收）
+  ipcMain.handle('subs:setKw', (e, { id, kw }) => {
+    const s = subs.get(id);
+    if (!s) return { ok: false, reason: '订阅不存在' };
+    s.kw = String(kw || '').split(/[,，\s]+/).map(x => x.trim()).filter(Boolean).slice(0, 20);
+    subs.save();
+    if (win && !win.isDestroyed()) win.webContents.send('subs:changed', subs.list());
+    return { ok: true, kw: s.kw };
+  });
+  ipcMain.handle('subs:remove', (e, { id }) => subs.remove(id));
+  ipcMain.handle('subs:check', (e, { id }) => checkAllSubs(id || null));
+  // 订阅卡片 📂：打开该订阅实际的下载子目录。
+  // yt-dlp 结构 {outDir}/{site}/{uploader}；gallery-dl 结构 {outDir}/{category}/{作者目录}（x→twitter/xxx、weibo→weibo/xxx…）
+  const GDL_CATEGORY = [
+    [/pixiv\.net/i, 'pixiv'], [/weibo\./i, 'weibo'], [/danbooru/i, 'danbooru'], [/gelbooru/i, 'gelbooru'],
+    [/yande\.re/i, 'yandere'], [/konachan/i, 'konachan'], [/artstation/i, 'artstation'], [/deviantart/i, 'deviantart'],
+    [/imgur/i, 'imgur'], [/flickr/i, 'flickr'], [/pinterest/i, 'pinterest'], [/tumblr/i, 'tumblr'],
+    [/reddit/i, 'reddit'], [/tiktok/i, 'tiktok'], [/instagram/i, 'instagram'],
+  ];
+  function subFolderCandidates(s) {
+    const base = settings.get().outDir;
+    if (s.kind === 'x') {
+      // twitter 提取器的目录名 = 作者 name（观察=handle）；显示名/命名都可能是别的，逐个候选
+      return [path.join(base, 'twitter', s.handle || ''), path.join(base, 'twitter', s.name || ''), path.join(base, 'twitter')];
+    }
+    if (s.kind === 'gdl') {
+      const cat = (GDL_CATEGORY.find(([re]) => re.test(s.url)) || [null, null])[1];
+      return [cat ? path.join(base, cat, s.name || '') : '', cat ? path.join(base, cat) : ''];
+    }
+    return [path.join(base, s.kind, s.name || '')];
+  }
+  ipcMain.handle('subs:openFolder', (e, { id }) => {
+    const s = subs.get(id);
+    if (!s) return { ok: false, reason: '订阅不存在' };
+    const hit = subFolderCandidates(s).find(d => d && fs.existsSync(d));
+    const target = hit || settings.get().outDir;   // 全没命中退回下载根目录，至少不是错误的文件夹
+    return shell.openPath(target).then(err => err ? { ok: false, reason: err } : { ok: true });
+  });
+  // 「源头已删除」明细 → 对应本地文件：gallery-dl 用动态 id 命名图片、BV 号在视频文件名里，按 id 搜订阅目录
+  ipcMain.handle('subs:goneFiles', (e, { id }) => {
+    const s = subs.get(id);
+    if (!s || !(s.gone || []).length) return { ok: true, files: {} };
+    const roots = [...new Set(subFolderCandidates(s).filter(d => d && fs.existsSync(d) && fs.statSync(d).isDirectory()))];
+    const files = [];
+    const walk = (dir, depth) => {
+      if (depth > 3 || files.length > 2000) return;
+      let ents; try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+      for (const ent of ents) {
+        const full = path.join(dir, ent.name);
+        if (ent.isDirectory()) walk(full, depth + 1);
+        else if (ent.isFile()) files.push(full);
+      }
+    };
+    roots.forEach(d => walk(d, 0));
+    const map = {};
+    for (const gid of s.gone) {
+      const hit = files.filter(f => path.basename(f).includes(gid)).slice(0, 10);
+      if (hit.length) map[gid] = hit;
+    }
+    return { ok: true, files: map };
+  });
+  ipcMain.handle('subs:resume', (e, { id }) => {   // 会审 P1：暂停的订阅可恢复
+    const r = subs.get(id);
+    if (!r) return { ok: false, reason: '订阅不存在' };
+    r.paused = false; r.failStreak = 0;
+    subs.save();
+    if (win && !win.isDestroyed()) win.webContents.send('subs:changed', subs.list());
+    return { ok: true };
+  });
+  // 回溯下载（手动 ⤓ 与「新订阅自动全量」共用）：拉订阅源全部媒体逐条入队（队列内已有同 URL 的自动跳过）
+  async function runBackfill(real) {
+    if (queue.active > 0 || [...queue.items.values()].some(x => ['queued', 'downloading'].includes(x.status))) {
+      return { ok: false, reason: '队列正忙，等当前任务跑完再回溯' };
+    }
+    let added = 0, skipped = 0;
+    // gdl 型订阅：所有项共享同一主页 URL（逐条入队会被同 URL 去重吞掉），整段一个任务即可
+    // （gallery-dl 自动翻页拉完整列表全量下载；下载时自动跳过已存在的文件，重复回溯安全）
+    if (real.kind === 'gdl') {
+      queue.add(real.url, { engine: 'gallery-dl', title: `[订阅回溯] ${real.name} · 全量`, _subId: real.id });
+      if (win && !win.isDestroyed()) win.webContents.send('queue:snapshot', queue.snapshot());
+      return { ok: true, added: 1, skipped: 0, total: 0, media: 0 };
+    }
+    // X 订阅回溯：yt-dlp 无用户时间线提取器（Unsupported URL 根因），整个回溯就是一个 gdl 任务
+    // （gallery-dl twitter 提取器图+视频一起下，全量翻页直到拉完；下载时自动跳过已存在文件）
+    if (real.kind === 'x') {
+      queue.add(real.url, { engine: 'gallery-dl', title: `[订阅回溯] ${real.name} · 全量`, _subId: real.id });
+      added++;
+      subs.refreshName(real.id);
+    }
+    const r = await subs.backfill(real.id, (s, it) => {
+      const url = subs.itemUrl(s, it);
+      if (!url) return;
+      if (!kwMatch(real, it.text)) return;   // 关键词过滤
+      if ([...queue.items.values()].some(x => x.url === url)) { skipped++; return; }
+      const engine = it.type === 'video' ? 'yt-dlp' : 'gallery-dl';
+      queue.add(url, { engine, title: `[订阅回溯] ${s.name} · ${(it.text || it.type || '').slice(0, 30)}`, _subId: s.id });
+      added++;
+    });
+    if (win && !win.isDestroyed()) win.webContents.send('queue:snapshot', queue.snapshot());
+    return { ok: true, added, skipped, total: r.total, media: r.media };
+  }
+  ipcMain.handle('subs:backfill', async (e, { id }) => {
+    const real = subs.get(id);
+    if (!real) return { ok: false, reason: '订阅不存在' };
+    return runBackfill(real);
+  });
+
+  // ===== B 站登录（扫码，Chromium 网络栈，绕开 TLS 指纹风控）=====
+  ipcMain.handle('login:open', async () => new Promise(resolve => {
+    const r = login.openLoginWindow(userData, res => resolve(res));
+    if (!r.ok) resolve(r);   // 窗口已打开等情况立即返回
+  }));
+  ipcMain.handle('login:state', () => login.loginState(userData));
+  ipcMain.handle('login:logout', () => login.logout(userData));
+
+  // ===== 本地转写（Whisper，照 VidBee 方法：模型自选下载 + 镜像切换）=====
+  ipcMain.handle('asr:models', () => ({ models: asr.listModels(), mirrors: asr.MIRRORS, activeModel: asr.anyModel() }));
+  ipcMain.handle('asr:setMirror', (e, { id }) => { asr.setMirror(id); return { ok: true }; });
+  // 设默认转写模型（已下载的模型可互相切换）
+  ipcMain.handle('asr:setModel', (e, { id }) => {
+    const ok = asr.setActive(id);
+    return ok ? { ok: true, activeModel: asr.anyModel() } : { ok: false, reason: '该模型尚未下载或不存在' };
+  });
+  ipcMain.handle('asr:download', (e, { id }) => {
+    // 防双击并发下载（会审 P2）：同一模型同时只允许一个下载任务
+    if (_asrDownloading.has(id)) return { ok: false, reason: '该模型正在下载中' };
+    _asrDownloading.add(id);
+    return asr.downloadModel(id, pct => {
+      if (win && !win.isDestroyed()) win.webContents.send('asr:downloadProgress', { id, pct });
+    }).finally(() => _asrDownloading.delete(id));
+  });
+  ipcMain.handle('asr:transcribe', (e, { filePath }) => {
+    const resolved = insideOutDir(filePath);   // 会审 P1：只许转写下载目录内的媒体（防任意文件读取/CPU 滥用）
+    if (!resolved) return { ok: false, reason: '只允许转写下载目录内的文件' };
+    if (!fs.existsSync(resolved)) return { ok: false, reason: '文件不存在' };
+    enqueueTranscribe(resolved, 'manual');
+    return { ok: true };
+  });
+  // 媒体库删除：移入系统回收站（可恢复），只许删下载目录内的文件
+  ipcMain.handle('lib:trash', async (e, { filePath }) => {
+    const resolved = insideOutDir(filePath);
+    if (!resolved) return { ok: false, reason: '只允许删除下载目录内的文件' };
+    if (!fs.existsSync(resolved)) return { ok: false, reason: '文件不存在（可能已被删除，刷新即可）' };
+    await shell.trashItem(resolved);
+    if (win && !win.isDestroyed()) win.webContents.send('library:changed');
+    return { ok: true };
+  });
+
+  createWindow();
+  createTray();
+
+  // UI 冒烟：策略页 DOM 渲染检查（仅 autotest 时）
+  if (process.env.FETCHIE_AUTOTEST && win) {
+    win.webContents.on('did-finish-load', async () => {
+      try {
+        const r = await win.webContents.executeJavaScript(`
+          (async () => {
+            switchPage('strategy');
+            await loadStrategy();
+            const t = document.getElementById('strategyList').innerText;
+            const l = document.getElementById('learnedList').innerText;
+            return JSON.stringify({
+              siteRows: (t.match(/bilibili\\.com|pixiv\\.net/g) || []).length,
+              sourceTag: t.includes('远程') || t.includes('内置'),
+              learnedShown: l.length > 0
+            });
+          })()
+        `);
+        console.log('[autotest] strategy ui:', r);
+      } catch (e) { console.log('[autotest] strategy ui FAIL:', e.message); }
+    });
+  }
+
+  // 订阅检查循环：启动 30s 后第一轮，之后每 10 分钟
+  let checkTimer = setTimeout(function schedule() {
+    checkAllSubs().catch(() => {});
+    checkTimer = setTimeout(schedule, CHECK_INTERVAL_MS);
+  }, 30 * 1000);
+
+  // 自动测试（主进程级，不依赖渲染层）
+  if (process.env.FETCHIE_AUTOTEST) {
+    setTimeout(async () => {
+      try {
+        const probe = await runEngine(binDir());
+        console.log('[autotest] engines:', JSON.stringify(probe));
+        if (!probe.ytDlp.ok || !probe.galleryDl.ok || !probe.ffmpeg.ok) throw new Error('engine probe failed');
+
+        // 引擎更新检查（只查不装，验证通路）
+        const updates = await autoupdate.checkAll().catch(e => { console.log('[autotest] update check fail:', e.message); return null; });
+        if (updates) for (const u of updates) console.log('[autotest] update:', u.engine, u.local, '->', u.remote, u.needUpdate ? '(NEED UPDATE)' : '(latest)');
+
+        // 策略层自检：B站档位 + 熔断接口
+        const st = strategy.forUrl('https://www.bilibili.com/video/x');
+        console.log('[autotest] strategy bilibili:', JSON.stringify({ sleep: st.sleep, level: st.level, threshold: st.breakerThreshold }));
+        if (!st.sleep || st.sleep < 3) throw new Error('strategy bilibili sleep invalid');
+
+        const t1 = queue.add('https://www.bilibili.com/video/BV1GJ411x7h7', { engine: 'yt-dlp', title: 'autotest-video' });
+        const t2 = queue.add('https://www.bilibili.com/opus/1251190976967344129', { engine: 'gallery-dl', title: 'autotest-gallery', _range: '1-3' });
+        const t3 = queue.add('https://www.bilibili.com/video/BV1GJ411x7h7', { engine: 'yt-dlp', title: 'autotest-audio', _audio: true });
+        console.log('[autotest] tasks added:', t1.id, t2.id, t3.id);
+
+        // 远程规则热更通路：对象直调验证「校验+合并+生效」，persist=false 不污染 remote-rules.json
+        strategy.applyRemoteRules([
+          { host: 'rules-test.example.com', sleep: 7, breakerThreshold: 2, backoffLevels: [7, 14, 30] },
+          { host: 'bad host!!', sleep: 999 },          // 应被过滤
+          { host: 'bilibili.com', sleep: 5 },           // 覆盖内置项
+        ], { persist: false });
+        const tr = strategy.forUrl('https://rules-test.example.com/a');
+        const tb = strategy.forUrl('https://www.bilibili.com/video/x');
+        console.log('[autotest] rules: test-host sleep=', tr.sleep, 'bilibili sleep=', tb.sleep, '(被本轮测试临时覆盖为 5)');
+        if (tr.sleep !== 7) throw new Error('applyRemoteRules new-host merge failed');
+        if (tb.sleep !== 5) throw new Error('applyRemoteRules existing-host override failed');
+
+        // 远程规则真实拉取通路（内置线上端点）；网络失败 WARN 不阻塞（环境因素）
+        const rr = await refreshRemoteRules();
+        console.log('[autotest] rules fetch:', rr.ok ? `OK version=${rr.version} applied=${rr.applied}/${rr.total}` : 'WARN ' + rr.reason);
+
+        const ids = new Set([t1.id, t2.id, t3.id]);
+        const snap = await new Promise(resolve => {
+          const iv = setInterval(() => {
+            const s = queue.snapshot();
+            if (s.filter(x => ids.has(x.id)).every(x => ['done', 'error', 'canceled'].includes(x.status))) { clearInterval(iv); resolve(s); }
+          }, 1000);
+        });
+        for (const s of snap.filter(x => ids.has(x.id))) console.log('[autotest] task:', s.status, s.engine, s.progress + '%', s.fileCount || '', s.error || '');
+        const pass = snap.filter(x => ids.has(x.id)).every(s => s.status === 'done');
+        const audioTask = snap.find(x => x.id === t3.id);
+        const audioOk = audioTask && audioTask.status === 'done' && /\.mp3$/i.test(audioTask.filePath || '');
+        console.log('[autotest] audio mode product:', audioOk ? 'OK ' + audioTask.filePath : 'FAIL ' + (audioTask ? audioTask.filePath : '?'));
+        if (!audioOk) throw new Error('audio-only task did not produce mp3');
+
+        // 本地转写断言：有模型才跑（tiny 75MB；无模型 WARN 不阻塞）
+        if (asr.anyModel()) {
+          const tr = await asr.transcribe(audioTask.filePath, { language: 'auto' });
+          const srtOk = tr.srt && fs.existsSync(tr.srt);
+          console.log('[autotest] transcribe:', srtOk ? 'OK ' + tr.srt : 'FAIL');
+          if (!srtOk) throw new Error('transcribe did not produce srt');
+        } else {
+          console.log('[autotest] transcribe: SKIP（未下载模型）');
+        }
+
+        // 媒体库索引自检：本轮已下载完成，目录内应有文件可聚合
+        const lib = await library.scan();
+        console.log('[autotest] library:', lib.groups.length, 'groups,', lib.totalFiles, 'files,',
+          (lib.totalSize / 1048576).toFixed(1) + 'MB',
+          lib.groups.slice(0, 3).map(g => `${g.site}/${g.uploader}(${g.fileCount})`).join(', '));
+        if (lib.totalFiles < 1) throw new Error('library scan found no files');
+
+        // RSS 通路验证：订阅影视飓风 → 探针拉动态列表（投稿+图文）
+        // 本测试机 IP 可能处于风控冷却期（空列表），断言分两级：
+        //   基础 = 探针通路不抛错；完整 = 列表非空时做「模拟增量」→ 触发下载 → done
+        let rssOk = false, rssDetail = 'no-run';
+        try {
+          const added = subs.add('https://space.bilibili.com/946974', 'autotest-sub');
+          const sub = subs.get(added.sub.id);
+          const r1 = await subs.checkSub(sub, () => {});
+          rssDetail = `total=${r1.total ?? '?'} fresh=${r1.fresh ?? '?'}`;
+          rssOk = r1.ok;
+          if (r1.ok && r1.total > 0 && sub.known.length > 1) {
+            // 模拟增量：删一条 known 再查 → 应发现 1 条新 → 自动入队下载
+            sub.checked = 1;
+            sub.known = sub.known.slice(1);
+            let dlDone = null;
+            const r2 = await subs.checkSub(sub, (s, it) => {
+              const engine = it.type === 'video' ? 'yt-dlp' : 'gallery-dl';
+              queue.add(subs.itemUrl(s, it), { engine, title: `[RSS增量] ${it.type} ${it.id}` });
+            });
+            if (r2.fresh > 0) {
+              const ok2 = await new Promise(resolve => {
+                const iv = setInterval(() => {
+                  const s = queue.snapshot().filter(x => x.title.startsWith('[RSS增量]'));
+                  if (s.length && s.every(x => ['done', 'error', 'canceled'].includes(x.status))) { clearInterval(iv); resolve(s.every(x => x.status === 'done')); }
+                }, 1000);
+              });
+              rssDetail += ` 增量下载:${ok2 ? 'OK' : 'FAIL'}`;
+              rssOk = rssOk && ok2;
+            }
+          }
+          subs.remove(added.sub.id);
+        } catch (e) { rssDetail = String(e.message).slice(0, 100); }
+        console.log('[autotest] rss:', rssOk ? 'OK' : 'WARN(风控冷却或探针异常)', `(${rssDetail})`);
+        const persisted = fs.existsSync(path.join(app.getPath('userData'), 'tasks.json'));
+        console.log('[autotest] persisted tasks.json:', persisted);
+        console.log('[autotest] login state:', JSON.stringify(login.loginState(app.getPath('userData'))), '（未登录属正常，扫码后变 true）');
+        console.log('[autotest] settings:', JSON.stringify(settings.get()));
+        if (!settings.get().outDir) throw new Error('settings outDir missing');
+        // 整体判定不含 rss（探针受 IP 风控冷却影响，属环境因素）；rss 状态独立输出供人工确认
+        console.log(pass && persisted ? 'M1_E2E_PASS' : 'M1_E2E_FAIL');
+        setTimeout(() => app.exit(pass && persisted ? 0 : 1), 1500);
+      } catch (e) {
+        console.error('[autotest]', e.message);
+        app.exit(2);
+      }
+    }, 3000);
+  }
+
+  app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
+});
+
+app.on('window-all-closed', () => {
+  // 托盘常驻：窗口全关（=全部隐藏）不退出；真正退出走托盘菜单（quitting=true）
+  if (quitting) app.quit();
+});
+
+app.on('before-quit', () => {
+  quitting = true;
+  // 会审 P1：杀掉活动引擎子进程——防孤儿 yt-dlp/gallery-dl 与下次启动的重复任务并发写同一文件
+  try {
+    if (queue) {
+      for (const it of [...queue.items.values()]) {
+        if (['downloading', 'held', 'queued'].includes(it.status)) { try { queue.cancel(it.id); } catch (e) {} }
+      }
+    }
+  } catch (e) {}
+  try { store.flushNow(); } catch (e) {}   // 防抖中的任务状态强制落盘
+});
+}   // 单实例锁 else 分支闭合：只有拿到锁的实例才注册以上生命周期
