@@ -33,7 +33,11 @@ icons/
 # 本地运行时文件
 *.pid
 nul
-screenshots/
+# 截图目录：README 三张必须入库，其余忽略
+screenshots/*
+!screenshots/dgo-library.png
+!screenshots/dgo-subs.png
+!screenshots/dgo-home.png
 
 # 测试与下载产物（不入库）
 test/
