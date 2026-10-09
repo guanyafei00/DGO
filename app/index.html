@@ -157,6 +157,11 @@
   <!-- 媒体库页 -->
   <div class="page" id="page-lib">
     <div class="hint" style="margin:0 2px 12px">按 <b>站点 / UP主</b> 聚合的本地媒体索引 · 只读展示，<b>任何情况下都不会自动删除你的文件</b> · 点击卡片展开文件列表</div>
+    <div class="paste-box" style="margin:0 2px 12px">
+      <span>🔍</span>
+      <input id="libKw" placeholder="搜索 UP主 / 站点 / 文件名…" style="flex:1;border:none;outline:none;font:inherit;font-size:13.5px;background:transparent;color:var(--txt)" oninput="setLibKw(this.value)">
+      <span class="act" id="libKwClear" style="display:none;cursor:pointer;font-size:11px" onclick="setLibKw('');$('libKw').value=''">✕ 清除</span>
+    </div>
     <div class="sec-t">📚 已收藏媒体 <span class="cnt" id="l-sum">0 个文件</span> <span class="act" style="cursor:pointer;font-size:11px;margin-left:auto" onclick="loadLibrary(true)">⟳ 重新扫描</span></div>
     <div id="libList"><div class="empty">还没有下载任何媒体——去任务队列贴个链接吧</div></div>
   </div>
@@ -858,18 +863,45 @@ async function loadLibrary(force) {
   renderLibrary();
 }
 
+let libKw = '';
+function setLibKw(v) {
+  libKw = String(v || '').trim();
+  $('libKwClear').style.display = libKw ? 'inline' : 'none';
+  renderLibrary();
+}
+
 function renderLibrary() {
   const el = $('libList');
   if (!libData) return;
-  $('l-cnt').textContent = libData.groups.length;
+  const kw = libKw.toLowerCase();
+  // 关键词过滤：UP主 / 站点 / 任一文件名命中即保留该组
+  const groups = kw ? libData.groups.filter(g =>
+    g.uploader.toLowerCase().includes(kw) || g.site.toLowerCase().includes(kw) ||
+    g.files.some(f => f.name.toLowerCase().includes(kw))) : libData.groups;
+  $('l-cnt').textContent = kw ? `${groups.length}/${libData.groups.length}` : libData.groups.length;
   $('l-sum').textContent = `${libData.totalFiles} 个文件 · ${fmtBytes(libData.totalSize)}`;
   if (!libData.groups.length) {
     el.innerHTML = `<div class="empty">还没有下载任何媒体——去任务队列贴个链接吧</div>`;
     return;
   }
-  el.innerHTML = libData.groups.map(g => {
+  if (!groups.length) {
+    el.innerHTML = `<div class="empty">没有匹配「${esc(libKw)}」的媒体</div>`;
+    return;
+  }
+  el.innerHTML = groups.map(g => {
     const open = g.key === expandedKey;
-    const filesHtml = open ? g.files.map(f => `
+    const matched = kw ? g.files.filter(f => f.name.toLowerCase().includes(kw)).length : 0;
+    const kwNote = kw && matched ? ` · <span style="color:var(--acc)">命中 ${matched} 个文件</span>` : '';
+    return `
+    <div class="task" style="cursor:pointer;${open ? 'border-color:var(--acc);background:var(--accbg)' : ''}" onclick="toggleGroup('${escAttr(g.key)}')">
+      <div class="t-thumb" style="font-size:22px">${siteIcon(g.site)}</div>
+      <div class="t-info">
+        <div class="name">${esc(g.uploader)} <span style="font-size:10px;color:var(--txt2);background:var(--panel2);border-radius:5px;padding:1px 6px">${esc(g.site)}</span></div>
+        <div class="meta">${g.fileCount} 个文件（🎥 ${g.videoCount} · 🖼️ ${g.imageCount}）· ${g.sizeText} · 最近更新 ${timeAgo(g.lastMtime)}${kwNote}</div>
+      </div>
+      <div class="x" onclick="event.stopPropagation();openPath('${escAttr(g.files[0] ? g.files[0].path : g.key)}')" title="打开文件夹">📁</div>
+      <div class="st ${open ? 'downloading' : 'queued'}">${open ? '收起 ▲' : '展开 ▼'}</div>
+    </div>${open ? g.files.map(f => `
       <div class="task" style="margin:0 0 6px 44px;padding:8px 12px">
         <div class="t-thumb" style="width:36px;height:28px;font-size:14px">${kindIcon(f.kind)}</div>
         <div class="t-info">
@@ -879,17 +911,7 @@ function renderLibrary() {
         ${/\.(mp4|mkv|webm|mov|avi|flv|m4a|mp3|wav)$/i.test(f.name) ? `<div class="x" onclick="event.stopPropagation();transcribeFile('${escAttr(f.path)}')" title="本地转写">📝</div><div class="x" onclick="event.stopPropagation();aiPanel('${escAttr(f.path)}')" title="AI 文稿助理（摘要/翻译）">✨</div>` : ''}
         <div class="x" onclick="openPath('${escAttr(f.path)}')" title="打开所在文件夹">📁</div>
         <div class="x" onclick="event.stopPropagation();trashFile('${escAttr(f.path)}')" title="删除（移入回收站，可恢复）" style="color:var(--red)">🗑</div>
-      </div>`).join('') : '';
-    return `
-    <div class="task" style="cursor:pointer;${open ? 'border-color:var(--acc);background:var(--accbg)' : ''}" onclick="toggleGroup('${escAttr(g.key)}')">
-      <div class="t-thumb" style="font-size:22px">${siteIcon(g.site)}</div>
-      <div class="t-info">
-        <div class="name">${esc(g.uploader)} <span style="font-size:10px;color:var(--txt2);background:var(--panel2);border-radius:5px;padding:1px 6px">${esc(g.site)}</span></div>
-        <div class="meta">${g.fileCount} 个文件（🎥 ${g.videoCount} · 🖼️ ${g.imageCount}）· ${g.sizeText} · 最近更新 ${timeAgo(g.lastMtime)}</div>
-      </div>
-      <div class="x" onclick="event.stopPropagation();openPath('${escAttr(g.files[0] ? g.files[0].path : g.key)}')" title="打开文件夹">📁</div>
-      <div class="st ${open ? 'downloading' : 'queued'}">${open ? '收起 ▲' : '展开 ▼'}</div>
-    </div>${filesHtml}`;
+      </div>`).join('') : ''}`;
   }).join('');
 }
 
