@@ -93,7 +93,7 @@ function add(url, name) {
     id: 's' + Date.now().toString(36), url: c.url || url.trim(),
     kind: c.kind, uid: c.uid || null, handle: c.handle || null, name: name || ('订阅 ' + (subs.length + 1)),
     lastCheck: 0, lastNew: 0, known: [], checked: 0,
-    autoBackfill: true,   // 主人需求：订阅=要全部 → 首检建基线后自动全量回溯（成功后清除）
+    autoBackfill: false,   // 会审 DGO-002：是否回溯历史由添加后的确认弹窗决定（用户拒绝必须生效，不许 10 分钟后偷跑）
   };
   subs.push(sub);
   save();
@@ -258,7 +258,7 @@ function fetchViaGdl(url, maxItems = 20) {
     child.stdout.on('data', d => { buf = Buffer.concat([buf, d]); });
     child.stderr.on('data', d => { err += dec.decode(d, { stream: true }); });
     child.on('error', e => { clearTimeout(timer); reject(e); });
-    child.on('close', () => {
+    child.on('close', (code) => {
       clearTimeout(timer);
       const out = dec.decode(buf);
       const items = [];
@@ -274,6 +274,8 @@ function fetchViaGdl(url, maxItems = 20) {
       if (!items.length) {
         const em = (err.split('\n').find(l => /error/i.test(l)) || '').trim();
         if (em) return reject(new Error(em.slice(0, 120)));
+        // 会审 DGO-008：退出码非 0 且无内容 = 拉取失败，绝不能当「空清单」把存量全判成删帖
+        if (code !== 0) return reject(new Error('gallery-dl 退出码 ' + code + '（网络波动或 cookie 失效，下轮重试）'));
       }
       resolve(items);
     });

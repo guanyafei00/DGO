@@ -9,6 +9,9 @@ app/node_modules/
 # GPL 合规：安装包不捆绑的二进制（gallery-dl 走 Codeberg 官方源，ffmpeg 走 gyan.dev）
 app/resources/bin/gallery-dl.exe
 app/resources/bin/ffmpeg.exe
+# 凭据/设备指纹文件绝不入库（会审 DGO-019）
+app/resources/cookies.txt
+cookies.txt
 
 # 内部文档（会审/调研报告，不对外）
 DGO会审材料_v3.md

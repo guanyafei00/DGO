@@ -20,10 +20,10 @@ function verify(j) {
   } catch (e) { return false; }
 }
 
-// 安装包哈希校验（清单里带 sha256 时强制比对）
+// 安装包哈希校验（清单里带 sha256 时强制比对；会审 DGO-004：缺失即拒绝，fail-closed）
 function sha256ok(filePath, expect) {
   try {
-    if (!expect) return true;
+    if (!expect) return false;
     const h = crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
     return h.toLowerCase() === String(expect).toLowerCase();
   } catch (e) { return false; }

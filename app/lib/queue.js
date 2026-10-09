@@ -172,9 +172,13 @@ class DownloadQueue {
       if (!next) break;
       this.run(next);
     }
-    // 若有 held 任务，定时回查熔断解除
+    // 若有 held 任务，或存在被熔断卡住的 queued 任务（会审 DGO-007：否则取消 held 后同站 queued 永久无唤醒源），定时回查
     const hasHeld = this.order.some(i => this.items.get(i).status === 'held');
-    if (hasHeld && !this._heldTimer) {
+    const queuedOnBreaker = !hasHeld && this.order.some(i => {
+      const it = this.items.get(i);
+      return it.status === 'queued' && strategy.isBreakered(it.url);
+    });
+    if ((hasHeld || queuedOnBreaker) && !this._heldTimer) {
       this._heldTimer = setTimeout(() => { this._heldTimer = null; this.tick(); this.push(); }, 30 * 1000);
     }
   }

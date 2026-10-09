@@ -4,6 +4,7 @@ if (process.env.DGO_CAPTURE) app.disableHardwareAcceleration();
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
+const { spawn } = require('child_process');   // 会审 DGO-001：app:applyUpdate 静默安装用，之前漏 import 导致自更新必炸
 
 // GPU 崩溃保护：核显/驱动异常机器上降级为软件渲染（实测 0xC0000005 GPU 进程崩溃）
 app.disableHardwareAcceleration();
@@ -451,6 +452,8 @@ app.whenReady().then(() => {
     if (!remote) return { ok: false, reason: '更新源格式错误（需要 {"version":"x.y.z","url":"安装包下载地址"}）' };
     // 发布闸门③：更新清单必须带 Ed25519 签名，验证失败一律拒绝（防更新通道劫持 = 持久化 RCE）
     if (!updateSign.verify(j)) return { ok: false, reason: '更新清单签名校验失败（非官方发布或被篡改），已拒绝' };
+    // 会审 DGO-004：验签通过的清单留存在主进程，安装路径只信这份，不信渲染层回传参数
+    _verifiedUpdate = { version: remote, url: j.url || '', sha256: j.sha256 || '' };
     const hasUpdate = cmpVer(remote, app.getVersion()) > 0;
     return { ok: true, hasUpdate, version: remote, current: app.getVersion(), url: j.url || '', notes: j.notes || '', sha256: j.sha256 || '' };
   }
@@ -460,21 +463,26 @@ app.whenReady().then(() => {
   ipcMain.handle('app:version', () => app.getVersion());
   ipcMain.handle('app:checkUpdate', () => appCheckUpdate());
   // 下载新版安装包 → 静默安装到当前目录 → 自动重启（NSIS /S /D=）
-  ipcMain.handle('app:applyUpdate', async (e, { url, sha256 }) => {
-    if (typeof url !== 'string' || !/^https:\/\//i.test(url)) return { ok: false, reason: '更新地址必须为 https' };
+  // 会审 DGO-004：url/sha256 一律取自主进程留存验签后的清单，忽略渲染层回传（防渲染层失守被静默装包）
+  let _verifiedUpdate = null;
+  ipcMain.handle('app:applyUpdate', async () => {
+    const mu = _verifiedUpdate;
+    if (!mu || !mu.url) return { ok: false, reason: '请先在设置页检查更新' };
+    if (!mu.sha256) return { ok: false, reason: '更新清单未带 sha256，已拒绝安装（完整性无法验证）' };
     if (queue.active > 0 || [...queue.items.values()].some(x => ['queued', 'downloading'].includes(x.status)))
       return { ok: false, reason: '队列还有任务，完成或清空后再更新软件' };
     const inst = path.join(os.tmpdir(), 'dgo-setup-' + Date.now() + '.exe');
-    await autoupdate.downloadPublic(url, inst);
+    await autoupdate.downloadPublic(mu.url, inst);
     const size = fs.existsSync(inst) ? fs.statSync(inst).size : 0;
     if (size < 10 * 1024 * 1024) { try { fs.unlinkSync(inst); } catch (e2) {} return { ok: false, reason: '安装包异常（' + Math.round(size / 1048576) + 'MB），已取消' }; }
     // 发布闸门③：安装包 sha256 与签名清单核对，不一致即销毁
-    if (!updateSign.sha256ok(inst, sha256)) {
+    if (!updateSign.sha256ok(inst, mu.sha256)) {
       try { fs.unlinkSync(inst); } catch (e2) {}
       return { ok: false, reason: '安装包哈希校验失败（可能被篡改或下载损坏），已取消安装' };
     }
-    const dir = path.dirname(process.execPath);
-    const child = spawn(inst, ['/S', '/D=' + dir], { detached: true, stdio: 'ignore' });
+    // 会审 DGO-016：NSIS /D= 必须不带引号（含空格目录也裸写），改用 shell 串拼装
+    const dir = path.dirname(process.execPath).replace(/[\\"]+$/, '');
+    const child = spawn(`"${inst}" /S /D=${dir}`, { detached: true, stdio: 'ignore', shell: true });
     child.unref();
     setTimeout(() => app.quit(), 1500);   // 给安装器起跑时间后退出
     return { ok: true };
@@ -618,9 +626,11 @@ app.whenReady().then(() => {
     return { ok: true, ready: ai.ready() };
   });
   // 对已转写的媒体文件跑 AI：读同名 .txt（或 .srt），结果存同名 .ai.md
+  // 会审 DGO-005：补 insideOutDir 校验（同文件其他文件操作都有，唯独这里漏了 → 越界读写）
   ipcMain.handle('ai:run', async (e, { p, task }) => {
     try {
       const base = String(p || '').replace(/\.[^.]+$/, '');
+      if (!insideOutDir(base)) return { ok: false, reason: '路径不在下载目录内' };
       const src = [base + '.txt', base + '.srt'].find(f => fs.existsSync(f));
       if (!src) return { ok: false, reason: '先转写出文字稿（📝）再跑 AI' };
       const text = fs.readFileSync(src, 'utf-8');

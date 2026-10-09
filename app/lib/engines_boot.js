@@ -51,10 +51,25 @@ async function dl(urlOrList, dest) {
   throw new Error(`${last && last.message || last}（已试 ${list.length} 个源${list.length > 1 ? '，含国内镜像' : ''}）`);
 }
 
-// gallery-dl 官方 sha256 pin（版本→exe 哈希，抄自 Codeberg SHA256SUMS；升版本时同步更新）
+// gallery-dl 官方 sha256 pin（版本→exe 哈希，抄自 Codeberg SHA256SUMS；离线可用，新版本靠 gdlExpected 拉 SHA256SUMS 自校验）
 const GDL_PIN = { '1.32.15': 'd6c8ac8ffdc9194e90787225e70d0a7c9eeed23dd41c9574e235632b6f9593a4' };
 // 自家 Release 兜底源（官方 gallery-dl.exe 原样上传到 DGO Release 资产即生效；github.com URL 自动吃镜像链）
 const SELF_GDL_URL = 'https://github.com/guanyafei00/DGO/releases/latest/download/gallery-dl.exe';
+
+// 会审 DGO-006：期望哈希 fail-closed——pin 表优先，否则拉 Codeberg 官方 SHA256SUMS（覆盖未来新版本，无需发版更新 pin 表）
+const _sumsCache = {};   // tag → sha256
+async function gdlExpected(tag) {
+  if (GDL_PIN[tag]) return GDL_PIN[tag];
+  if (!(tag in _sumsCache)) {
+    const r = await fetch(`https://codeberg.org/mikf/gallery-dl/releases/download/${tag}/SHA256SUMS`, HDRS);   // 实测文件名无 .txt
+    if (!r.ok) throw new Error('SHA256SUMS HTTP ' + r.status);
+    const txt = await r.text();
+    const line = txt.split(/\r?\n/).find(l => l.trim().endsWith('gallery-dl.exe'));
+    if (!line) throw new Error('SHA256SUMS 里没有 gallery-dl.exe 条目');
+    _sumsCache[tag] = line.trim().split(/\s+/)[0].toLowerCase();
+  }
+  return _sumsCache[tag];
+}
 
 function sha256File(p) {
   const h = crypto.createHash('sha256');
@@ -62,13 +77,15 @@ function sha256File(p) {
   return h.digest('hex');
 }
 
-// gallery-dl 最新 tag（Codeberg API 不限流；资产必须含 gallery-dl.exe 才返回）
+// gallery-dl 最新「带 gallery-dl.exe 二进制」的 tag（Codeberg API 不限流）
+// 实测：新版发布初期可能只有源码资产（v1.32.16 无二进制），要往后找最近一个带 exe 的版本
 async function gdlTag() {
-  const r = await fetch('https://codeberg.org/api/v1/repos/mikf/gallery-dl/releases/latest', HDRS);
+  const r = await fetch('https://codeberg.org/api/v1/repos/mikf/gallery-dl/releases?limit=10', HDRS);
   if (!r.ok) throw new Error('codeberg API ' + r.status);
-  const j = await r.json();
-  if (!(j.assets || []).some(x => x.name === 'gallery-dl.exe')) throw new Error('codeberg ' + j.tag_name + ' 无 gallery-dl.exe');
-  return j.tag_name;
+  for (const j of await r.json()) {
+    if ((j.assets || []).some(x => x.name === 'gallery-dl.exe')) return j.tag_name;
+  }
+  throw new Error('codeberg 最近 10 个 release 均无 gallery-dl.exe');
 }
 
 // win 解压：PowerShell Expand-Archive（把 zip 内的 ffmpeg.exe 提到 destDir）
@@ -113,23 +130,24 @@ async function ensureEngines(binDir) {
       } else if (n === 'gallery-dl') {
         if (isWin) {
           // 降级链（顺序写死，禁止静默换源；结果带来源标注供 UI 明示）：
-          // ① Codeberg 官方（含 pin sha256 校验）② 自家 Release 副本（自动吃镜像）③ GitHub official（万一恢复发布）
+          // ① Codeberg 官方 ② 自家 Release 副本（自动吃镜像）③ GitHub official（万一恢复发布）
+          // 会审 DGO-006：三个源都必须过期望哈希（pin 或官方 SHA256SUMS），拿不到期望哈希直接拒绝（fail-closed 防镜像投毒）
           const dest = path.join(binDir, 'gallery-dl.exe');
           let tag = null;
           try { tag = await gdlTag(); } catch (e) {}
+          let expect = null;
+          if (tag) { try { expect = await gdlExpected(tag); } catch (e) {} }
+          if (!expect) throw new Error('无法获取官方 SHA-256（pin 表无此版本且 SHA256SUMS 拉取失败），拒绝下载以防供应链投毒；可稍后重启重试，或在设置页「从本地文件安装」手动导入');
           const sources = [];
-          if (tag) sources.push({ label: 'Codeberg官方', url: `https://codeberg.org/mikf/gallery-dl/releases/download/${tag}/gallery-dl.exe`, tag });
-          sources.push({ label: 'DGORelease副本', url: SELF_GDL_URL, tag: null });
-          sources.push({ label: 'GitHub镜像', url: 'https://github.com/mikf/gallery-dl/releases/latest/download/gallery-dl.exe', tag: null });
+          if (tag) sources.push({ label: 'Codeberg官方', url: `https://codeberg.org/mikf/gallery-dl/releases/download/${tag}/gallery-dl.exe` });
+          sources.push({ label: 'DGORelease副本', url: SELF_GDL_URL });
+          sources.push({ label: 'GitHub镜像', url: 'https://github.com/mikf/gallery-dl/releases/latest/download/gallery-dl.exe' });
           let lastErr, used = null;
           for (const s of sources) {
             try {
               await dl(s.url, dest);
-              const pin = s.tag && GDL_PIN[s.tag];
-              if (pin) {
-                const got = sha256File(dest);
-                if (got !== pin) throw new Error('sha256 与官方清单不符(' + got.slice(0, 12) + ')，已丢弃');
-              }
+              const got = sha256File(dest);
+              if (got !== expect) throw new Error('sha256 与官方清单不符(' + got.slice(0, 12) + ')，已丢弃');
               used = s.label;
               break;
             } catch (e) { lastErr = e; }

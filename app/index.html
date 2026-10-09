@@ -149,7 +149,7 @@
       <input id="subUrl" placeholder="粘贴主页链接：B站UP主 / YouTube频道 / X用户 / Pixiv·微博·Danbooru·Reddit·Instagram 等图站用户页，更新即自动下载" style="flex:1;border:none;outline:none;font:inherit;font-size:13.5px;background:transparent;color:var(--txt)">
       <button class="btn-dl" onclick="addSub()">＋ 添加订阅</button>
     </div>
-    <div class="hint">每 10 分钟自动增量检查（轻量单次请求，不触发风控）· 首次添加只记录不下载 · 新内容自动入队 · <b>UP 主删除源视频不会删除你已下载的文件</b></div>
+    <div class="hint">每 10 分钟自动增量检查（轻量单次请求，不触发风控）· 添加后会询问是否回溯全部历史 · 新内容自动入队 · <b>UP 主删除源视频不会删除你已下载的文件</b></div>
     <div class="sec-t">📡 我的订阅 <span class="cnt" id="s-cnt2">0</span> <span class="act" style="cursor:pointer;font-size:11px;margin-left:auto" onclick="checkAllSubs()">⟳ 立即检查</span></div>
     <div id="subList"><div class="empty">还没有订阅——支持 B站UP主 / YouTube频道 / X用户 / Pixiv / 微博 / Reddit / Instagram / Danbooru 等站点主页</div></div>
   </div>
@@ -727,7 +727,7 @@ function goneBadge(s) {
     }
     const local = fmap[id] || [];
     if (local.length) {
-      html += ` — <a href="#" onclick="locateGoneFile('${s.id}','${esc(id)}');return false" style="color:var(--green)">📁 本地文件</a>`;
+      html += ` — <a href="#" onclick="locateGoneFile('${s.id}','${escAttr(id)}');return false" style="color:var(--green)">📁 本地文件</a>`;
     }
     return `<li>${html}</li>`;
   }).join('');
@@ -899,7 +899,8 @@ function fmtBytes(b) {
   if (b >= 1024) return (b / 1024).toFixed(0) + ' KB';
   return b + ' B';
 }
-function escAttr(s) { return String(s ?? '').replace(/\\/g, '\\\\').replace(/'/g, "\\'"); }
+// 会审 DGO-003：补双引号转义（HTML 属性逃逸），单引号/反斜杠转 JS 字符串层
+function escAttr(s) { return String(s ?? '').replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '&quot;'); }
 function toggleGroup(key) { expandedKey = expandedKey === key ? null : key; renderLibrary(); }
 async function openPath(p) {
   const r = await window.fetchie.openFolder(p);
