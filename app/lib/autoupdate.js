@@ -64,9 +64,14 @@ async function latestYtDlp() {
   return { version: tag, url: `https://github.com/yt-dlp/yt-dlp/releases/download/${tag}/yt-dlp.exe` };
 }
 async function latestGalleryDl() {
-  const j = await getJson('https://codeberg.org/api/v1/repos/mikf/gallery-dl/releases/latest');
-  const asset = (j.assets || []).find(a => a.name === 'gallery-dl.exe');
-  return { version: j.tag_name, url: asset ? asset.browser_download_url : `https://codeberg.org/mikf/gallery-dl/releases/download/${j.tag_name}/gallery-dl.exe` };
+  // 会审 T1：releases/latest 可能只有源码资产（v1.32.16 实测无二进制，旧逻辑返回的 URL 404）。
+  // 改为扫描最近 10 个 release，找最近一个带 gallery-dl.exe 的（与 engines_boot.gdlTag 同策略）
+  const list = await getJson('https://codeberg.org/api/v1/repos/mikf/gallery-dl/releases?limit=10');
+  for (const rel of (Array.isArray(list) ? list : [])) {
+    const asset = (rel.assets || []).find(a => a.name === 'gallery-dl.exe');
+    if (asset) return { version: rel.tag_name, url: asset.browser_download_url };
+  }
+  throw new Error('codeberg 最近 10 个 release 均无 gallery-dl.exe');
 }
 function localVersion(engine) {
   return new Promise(resolve => {

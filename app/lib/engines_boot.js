@@ -89,11 +89,13 @@ async function gdlTag() {
 }
 
 // win 解压：PowerShell Expand-Archive（把 zip 内的 ffmpeg.exe 提到 destDir）
+// 会审 T2c：路径里的单引号会截断 PS 字符串（甚至注入命令），PS 单引号串里 '' 才是一个字面单引号
 function winExpand(zipPath, destDir) {
   return new Promise((res, rej) => {
-    const ps = `Expand-Archive -LiteralPath '${zipPath}' -DestinationPath '${destDir}' -Force; ` +
-      `$f = Get-ChildItem -Path '${destDir}' -Recurse -Filter 'ffmpeg.exe' | Select-Object -First 1; ` +
-      `if ($f) { Copy-Item $f.FullName '${path.join(destDir, 'ffmpeg.exe')}' -Force; 'OK' } else { 'MISS' }`;
+    const q = s => String(s).replace(/'/g, "''");
+    const ps = `Expand-Archive -LiteralPath '${q(zipPath)}' -DestinationPath '${q(destDir)}' -Force; ` +
+      `$f = Get-ChildItem -Path '${q(destDir)}' -Recurse -Filter 'ffmpeg.exe' | Select-Object -First 1; ` +
+      `if ($f) { Copy-Item $f.FullName '${q(path.join(destDir, 'ffmpeg.exe'))}' -Force; 'OK' } else { 'MISS' }`;
     const p = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], { stdio: ['ignore', 'pipe', 'pipe'] });
     let out = '';
     p.stdout.on('data', d => { out += d; });

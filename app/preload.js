@@ -40,6 +40,7 @@ contextBridge.exposeInMainWorld('fetchie', {
   appApplyUpdate: (url, sha256) => ipcRenderer.invoke('app:applyUpdate', { url, sha256 }),
   setUpdateUrl: (url) => ipcRenderer.invoke('settings:setUpdateUrl', { url }),
   setEngineAuto: (on) => ipcRenderer.invoke('settings:setEngineAuto', { on }),
+  setNotify: (o) => ipcRenderer.invoke('settings:setNotify', o),
   onToast: (cb) => ipcRenderer.on('toast:event', (e, d) => cb(d)),
   cookieInfo: () => ipcRenderer.invoke('cookie:info'),
   cookieImport: () => ipcRenderer.invoke('cookie:import'),

@@ -10,6 +10,9 @@ function configure({ file, defaultOutDir }) {
   FILE = file;
   data = readJson(FILE, {}, v => v && typeof v === 'object' && !Array.isArray(v));
   if (!data.outDir || typeof data.outDir !== 'string') data.outDir = defaultOutDir;
+  // 通知设置默认值（notifyDone=开关，notifyMode=each 单项即通知 / batch 全部完成后统一通知）——坏值归一化
+  if (data.notifyDone === undefined) data.notifyDone = true; else data.notifyDone = !!data.notifyDone;
+  if (!['each', 'batch'].includes(data.notifyMode)) data.notifyMode = 'each';
 }
 
 function get() { return { ...data }; }

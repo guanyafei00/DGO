@@ -134,12 +134,14 @@ function transcribe(mediaPath, opts = {}) {
     if (!fs.existsSync(cli)) return reject(new Error('whisper-cli.exe 缺失'));
 
     fs.mkdirSync(MODELS_DIR, { recursive: true });
-    // 1) ffmpeg 提 16kHz 单声道 wav（whisper 要求）
+    // 1) ffmpeg 提 16kHz 单声道 wav（whisper 要求）。会审 B5：加超时——挂死的 ffmpeg 不再永久卡住转写队列
     const ff = spawn(ffmpeg, ['-y', '-i', mediaPath, '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', wav], { windowsHide: true });
     let ffErr = '';
+    const ffTimer = setTimeout(() => { try { ff.kill('SIGKILL'); } catch (e) {} }, 10 * 60 * 1000);   // 10 分钟足够提完几个小时的音轨
     ff.stderr.on('data', d => ffErr += d);
-    ff.on('error', reject);
+    ff.on('error', e => { clearTimeout(ffTimer); reject(e); });
     ff.on('close', code => {
+      clearTimeout(ffTimer);
       if (code !== 0) {
         try { fs.unlinkSync(wav); } catch (e) {}   // 会审 P2：提取失败不残留临时 wav
         return reject(new Error('音频提取失败: ' + ffErr.slice(-150)));
@@ -149,6 +151,12 @@ function transcribe(mediaPath, opts = {}) {
       if (opts.language && opts.language !== 'auto') args.push('--prompt', '以下是普通话的句子。');   // 中文提示提升断句
       const child = spawn(cli, args, { windowsHide: true });
       let out = '', err = '', lastPct = 0;
+      // 会审 B5：转写总超时 30 分钟——超长文件/CPU 过载导致的挂死不再永久占住串行队列
+      const wTimer = setTimeout(() => {
+        try { child.kill('SIGKILL'); } catch (e) {}
+        try { fs.unlinkSync(wav); } catch (e) {}
+        reject(new Error('转写超时（30 分钟未完成，文件过长或 CPU 过载）'));
+      }, 30 * 60 * 1000);
       const onProg = pct => { if (pct > lastPct && opts.onProgress) { lastPct = pct; opts.onProgress(pct); } };
       child.stdout.on('data', d => {
         out += d;
@@ -156,8 +164,9 @@ function transcribe(mediaPath, opts = {}) {
         if (m) { const last = m[m.length - 1].match(/(\d+)%/); if (last) onProg(parseInt(last[1], 10)); }
       });
       child.stderr.on('data', d => err += d);
-      child.on('error', () => { try { fs.unlinkSync(wav); } catch (e) {} reject(new Error('whisper-cli 启动失败')); });
+      child.on('error', () => { clearTimeout(wTimer); try { fs.unlinkSync(wav); } catch (e) {} reject(new Error('whisper-cli 启动失败')); });
       child.on('close', wcode => {
+        clearTimeout(wTimer);
         try { fs.unlinkSync(wav); } catch (e) {}
         if (wcode !== 0) return reject(new Error('转写失败 code=' + wcode + ': ' + (err.split('\n').find(l => l.includes('error')) || err).slice(0, 150)));
         onProg(100);

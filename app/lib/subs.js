@@ -40,7 +40,7 @@ function gdlBaseArgs() {
 }
 function setProxy(p) { PROXY = p || null; }
 function save() { try { atomicWrite(FILE, JSON.stringify(subs, null, 2)); } catch (e) { console.warn('[subs] save fail:', e.message); } }
-function list() { return subs.map(s => ({ ...s, known: undefined, knownCount: (s.known || []).length })); }
+function list() { return subs.map(s => ({ ...s, known: undefined, knownCount: (s.known || []).length, goneSeen: undefined })); }
 function get(id) { return subs.find(s => s.id === id); }
 
 // （cookieHeader 已移除：全项目无调用的死代码，会审清理）
@@ -292,7 +292,7 @@ function refreshName(id) {
 // 检查一轮。回调 onNew(sub, item) 通知新内容
 async function checkSub(sub, onNew) {
   let items = null;
-  if (sub.kind === 'bilibili') items = await fetchBiliDynamic(sub.uid, 1);
+  if (sub.kind === 'bilibili') items = await fetchBiliDynamic(sub.uid, 2);   // 会审 B2：翻 2 页——充电专属图文会占满第一页，投稿视频常被推到第二页
   else if (sub.kind === 'x') {
     // X 走 gallery-dl：yt-dlp 根本没有用户时间线提取器（--list-extractors 只有单条推文），
     // flat-playlist 必报 Unsupported URL；gallery-dl 的 twitter 提取器原生支持主页时间线，图+视频一起下（需 x.com cookie）
@@ -308,9 +308,27 @@ async function checkSub(sub, onNew) {
   // 旧版拿全量 known（500条）对最新一页（12/20条），老帖滑出列表就被误判删除。
   // 窗口滑动宽容：本轮新增 freshCount 条新帖，会把 lastSeen 最老的 freshCount 条挤出列表（items 最新在前，被挤的在尾部），
   // 剩下的 missing 才算真删除。
+  // gone（源头删除）判定 v3（会审 A2 累积制）：连续 2 轮检查都消失才判定为删除。
+  // 背景：B 站动态接口偶发瞬断/只返回部分列表，单轮「不见了」直接报删帖会误报。
+  // 保留 v2 的窗口滑动宽容：本轮新增 freshCount 条新帖会把 lastSeen 最老的 freshCount 条挤出列表（正常滑动，非删除）。
+  // goneSeen 记 { n: 连续消失轮数, t: 最近一次判消失的时间 }——id 滑出 lastSeen 窗口后观察不中断，
+  // 30 分钟没有再次观察到即过期清除（防旧帖残留计数把「自然滑出」误判成删帖）
   const visible = new Set(items.map(it => it.id));
   const missing = (sub.lastSeen || []).filter(id => !visible.has(id));
-  const gone = missing.slice(0, Math.max(0, missing.length - fresh.length));
+  const candidates = missing.slice(0, Math.max(0, missing.length - fresh.length));
+  const gs = sub.goneSeen || {};
+  const nowMs = Date.now();
+  const gone = [];
+  for (const id of candidates) gs[id] = { n: (gs[id] ? gs[id].n : 0) + 1, t: nowMs };
+  for (const id of Object.keys(gs)) {
+    if (visible.has(id)) { delete gs[id]; continue; }   // 复活即清除
+    if (candidates.includes(id)) continue;   // 本轮已计数，勿重复累加
+    if (nowMs - (gs[id].t || 0) < 30 * 60 * 1000) {   // 仍在观察期内（约 3 轮检查）
+      gs[id].n++; gs[id].t = nowMs;
+      if (gs[id].n >= 2) { gone.push(id); delete gs[id]; }
+    } else delete gs[id];   // 观察过期
+  }
+  sub.goneSeen = gs;
   sub.lastSeen = items.map(it => it.id).slice(0, 100);
 
   // 基线判定：首次 或 known 为空（此前全失败空转的订阅，第一次真正拉到清单时也要做基线防轰炸）
@@ -320,12 +338,16 @@ async function checkSub(sub, onNew) {
     if (items.channel) sub.name = items.channel;
     else if (sub.kind === 'gdl' || sub.kind === 'x') guessName(sub.id);   // 加订阅时没名字的（如当时缺 cookie），检查通了再补一次
   } else {
+    let recorded = 0;
     for (const it of fresh) {
-      if (onNew) onNew(sub, it);   // text 类型由调用方决定不入队（无媒体）
+      // 会审 B1：onNew 返回 false = 调用方判定本条未真正入队（如队列去重命中，而既有任务可能失败/被取消）。
+      // 此时不记 known——下轮仍算 fresh 重查，防止增量被永久吞掉
+      if (onNew && onNew(sub, it) === false) continue;
       known.add(it.id);
+      recorded++;
     }
     sub.known = [...known].slice(-500);   // 防无限膨胀
-    sub.lastNew = fresh.length;
+    sub.lastNew = recorded;
   }
   sub.lastCheck = Date.now();
   sub.checked++;

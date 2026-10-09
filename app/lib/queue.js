@@ -35,6 +35,20 @@ function isRateLimitError(text) {
   return /\b(412|429)\b|-352|rate.?limit|Too Many Requests|Waiting for \d+ (minutes|seconds)|Precondition Failed|请求过于频繁/i.test(text || '');
 }
 
+// 会审 T4：Windows 下引擎会再 spawn 子进程（yt-dlp→ffmpeg 合并）；只 kill 父进程会留孤儿
+// 继续写同一文件。taskkill /T 连整棵进程树一起杀，失败回落 SIGKILL
+function killTree(child) {
+  if (!child) return;
+  try { if (child.exitCode !== null) return; } catch (e) {}
+  if (process.platform === 'win32' && child.pid) {
+    try {
+      spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' }).unref();
+      return;
+    } catch (e) {}
+  }
+  try { child.kill('SIGKILL'); } catch (e) {}
+}
+
 class DownloadQueue {
   constructor(broadcast) {
     this.broadcast = broadcast;
@@ -80,7 +94,7 @@ class DownloadQueue {
     const it = this.items.get(id);
     if (!it) return false;
     if (['queued', 'downloading', 'held'].includes(it.status)) {
-      if (it._child) { try { it._child.kill('SIGKILL'); } catch (e) {} }
+      killTree(it._child);
       if (it._wasActive) { this.active = Math.max(0, this.active - 1); it._wasActive = false; }
       it.status = 'canceled';
       this.tick();
@@ -90,10 +104,11 @@ class DownloadQueue {
     return false;
   }
 
-  // 重试：error/held/canceled → queued（重置进度统计，防跨次累加虚高）
+  // 重试：error/held/canceled/done → queued（重置进度统计，防跨次累加虚高）
+  // 会审 B8：done 也允许重试——doneCard 本来就渲染了 ⟳ 按钮，点了却无响应；gallery-dl 重跑会自动跳过已有文件
   retry(id) {
     const it = this.items.get(id);
-    if (!it || !['error', 'held', 'canceled'].includes(it.status)) return false;
+    if (!it || !['error', 'held', 'canceled', 'done'].includes(it.status)) return false;
     it.status = strategy.isBreakered(it.url) ? 'held' : 'queued';
     it.error = null;
     it.progress = 0;
