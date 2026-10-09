@@ -12,6 +12,10 @@ app.disableHardwareAcceleration();
 if (process.env.FETCHIE_AUTOTEST) {
   app.setPath('userData', path.join(os.tmpdir(), 'dgo-autotest-' + Date.now()));
 }
+// README 截图数据隔离：用仓库内演示数据（screenshots/demo-userdata），公开截图不暴露主人真实订阅
+if (process.env.DGO_CAPTURE) {
+  app.setPath('userData', path.join(__dirname, '..', 'screenshots', 'demo-userdata'));   // app/ 上一层就是工作区根
+}
 
 const identify = require('./lib/identify');
 const { DownloadQueue, configure } = require('./lib/queue');
@@ -97,7 +101,7 @@ function createWindow() {
     webPreferences: { preload: path.join(__dirname, 'preload.js') }
   });
   win.loadFile('index.html');
-  // README 截图模式：DGO_CAPTURE=1 启动时自动切页截 3 张图后退出（真实数据，发布前主人审阅）
+  // README 截图模式：DGO_CAPTURE=1 用演示数据自动切页截 3 张图后退出（数据隔离见文件头部）
   // capturePage 在 in-process-gpu 下会挂死 → 兜底走 desktopCapturer 屏幕捕获（OS 层，不依赖 Chromium 合成器）
   if (capture) {
     const { desktopCapturer, screen } = require('electron');
