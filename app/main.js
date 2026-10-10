@@ -34,6 +34,7 @@ const enginesBoot = require('./lib/engines_boot');
 const updateSign = require('./lib/update_sign');
 const log = require('./lib/log');
 const source = require('./lib/source');
+const srtLib = require('./lib/srt');
 
 const CHECK_INTERVAL_MS = 10 * 60 * 1000;   // 每站 10 分钟增量检查
 const RULES_INTERVAL_MS = 6 * 3600 * 1000;  // 远程风控规则 6 小时拉一轮
@@ -56,6 +57,8 @@ async function refreshRemoteRules() {
     return { ok: false, reason: e.message, version: _rulesVersion };
   }
 }
+
+function exe(n) { return process.platform === 'win32' ? n + '.exe' : n; }   // 平台化引擎文件名
 
 function binDir() {
   // darwin：安装包不带 mac 二进制，首启由 engines_boot 下载到 userData/engines
@@ -317,6 +320,76 @@ app.whenReady().then(() => {
       return null;
     });
     return asrChain;
+  }
+
+  // ===== 阶段一：双语字幕 / 烧字幕（媒体库 🌐 🎬）=====
+  function jobState(p, state, note) {   // 媒体库通用任务状态（翻译/烧字幕），渲染层 jobStates 消费
+    if (win && !win.isDestroyed()) win.webContents.send('lib:job', { filePath: p, state, note });
+  }
+  // 翻译串行链：逐个跑，防并发打爆 AI 接口；无 SRT 时自动先转写（对主人零门槛）
+  let srtChain = Promise.resolve();
+  function enqueueTranslate(mediaPath) {
+    srtChain = srtChain.then(() => translateOne(mediaPath)).catch(e => {
+      log.warn('srt', '双语字幕失败 ' + mediaPath + ': ' + e.message);
+      jobState(mediaPath, 'error', e.message);
+      if (win && !win.isDestroyed()) win.webContents.send('toast:event', { msg: '双语字幕失败：' + String(e.message).slice(0, 100) });
+    });
+    return srtChain;
+  }
+  async function translateOne(mediaPath) {
+    const base = mediaPath.replace(/\.[^.]+$/, '');
+    const srtPath = base + '.srt';
+    if (!fs.existsSync(srtPath)) {
+      jobState(mediaPath, 'running', '尚无字幕，先本地转写…');
+      await asr.transcribe(mediaPath, { onProgress: pct => jobState(mediaPath, 'running', `转写 ${pct}%`) });
+    }
+    jobState(mediaPath, 'running', '翻译中…');
+    const r = await srtLib.translateSrt(srtPath, {
+      translator: async (prompt, hint) => ai.run('srtTranslate', hint ? hint + prompt : prompt),
+      onProgress: (d, t) => jobState(mediaPath, 'running', `翻译 ${d}/${t} 条`),
+    });
+    jobState(mediaPath, 'done', r.outFile);
+    log.info('srt', `双语字幕完成 ${r.blocks} 条 → ${r.outFile}`);
+    toastMsg('双语字幕已生成 ✓ ' + path.basename(r.outFile));
+    return r;
+  }
+  // 烧字幕：优先双语 .zh.srt，否则原 .srt；ffmpeg 硬字幕（libx264 重编码 + 音频直拷）
+  function burnSubs(videoPath) {
+    return new Promise((resolve, reject) => {
+      const base = videoPath.replace(/\.[^.]+$/, '');
+      const srt = [base + '.zh.srt', base + '.srt'].find(f => fs.existsSync(f));
+      if (!srt) return reject(new Error('该文件还没有字幕，先点 🌐 生成双语字幕'));
+      const out = base + '.burned.mp4';
+      // subtitles filter 转义：\ → /，: → \:（Windows 盘符），' → \'（filter 引号串）
+      const esc = srt.replace(/\\/g, '/').replace(/:/g, '\\:').replace(/'/g, "\\'");
+      const ff = path.join(binDir(), exe('ffmpeg'));
+      if (!fs.existsSync(ff)) return reject(new Error('ffmpeg 未就绪'));
+      const child = spawn(ff, ['-y', '-i', videoPath, '-vf', `subtitles='${esc}'`, '-c:v', 'libx264', '-crf', '20', '-preset', 'fast', '-c:a', 'copy', out], { windowsHide: true });
+      let err = '';
+      child.stderr.on('data', d => { err += d; });
+      child.on('error', e => reject(e));
+      child.on('close', code => {
+        if (code === 0 && fs.existsSync(out)) return resolve({ ok: true, out });
+        const m = err.match(/Error[^\n]*|No such filter[^\n]*|[^\n]*Unable to open[^\n]*/i);
+        reject(new Error('烧字幕失败 code=' + code + (m ? ': ' + m[0].slice(0, 120) : '')));
+      });
+    });
+  }
+  let burnChain = Promise.resolve();
+  function enqueueBurn(videoPath) {
+    burnChain = burnChain.then(() => {
+      jobState(videoPath, 'running', '烧字幕中（视频重编码，可能几分钟）…');
+      return burnSubs(videoPath);
+    }).then(r => {
+      jobState(videoPath, 'done', r.out);
+      log.info('srt', '烧字幕完成 → ' + r.out);
+      toastMsg('字幕已烧入视频 ✓ ' + path.basename(r.out));
+      if (win && !win.isDestroyed()) win.webContents.send('library:changed');
+    }).catch(e => {
+      jobState(videoPath, 'error', e.message);
+      toastMsg('烧字幕失败：' + String(e.message).slice(0, 100));
+    });
+    return burnChain;
   }
 
   // 恢复标记：恢复时已存在的 done 任务不算「新完成」（不触发媒体库刷新）
@@ -949,6 +1022,38 @@ app.whenReady().then(() => {
     if (!resolved) return { ok: false, reason: '只允许转写下载目录内的文件' };
     if (!fs.existsSync(resolved)) return { ok: false, reason: '文件不存在' };
     enqueueTranscribe(resolved, 'manual');
+    return { ok: true };
+  });
+  // 阶段一：全组批量转写——组内每个未转写的音视频入串行队列（已有 .srt 的跳过）
+  ipcMain.handle('asr:batch', (e, { paths }) => {
+    let added = 0, skipped = 0;
+    for (const p of (Array.isArray(paths) ? paths : [])) {
+      const resolved = insideOutDir(p);
+      if (!resolved || !fs.existsSync(resolved)) continue;
+      if (!/\.(mp4|mkv|webm|mov|avi|flv|m4a|mp3|wav)$/i.test(resolved)) continue;
+      if (fs.existsSync(resolved.replace(/\.[^.]+$/, '') + '.srt')) { skipped++; continue; }
+      enqueueTranscribe(resolved, 'batch');
+      added++;
+    }
+    if (added) toastMsg(`已加入批量转写队列：${added} 个文件（${skipped} 个已有字幕跳过），逐个处理中`);
+    else toastMsg(skipped ? '该组全部文件都已有字幕' : '没有可转写的媒体文件');
+    return { ok: true, added, skipped };
+  });
+  // 阶段一：双语字幕——无 SRT 自动先转写，再分块翻译合成中英对照（走主人已配的 AI key）
+  ipcMain.handle('srt:translate', (e, { filePath }) => {
+    const resolved = insideOutDir(filePath);
+    if (!resolved) return { ok: false, reason: '只允许处理下载目录内的文件' };
+    if (!fs.existsSync(resolved)) return { ok: false, reason: '文件不存在' };
+    if (!ai.ready()) return { ok: false, reason: '请先在设置页配置 AI 接口（翻译用），转写不受影响' };
+    enqueueTranslate(resolved);
+    return { ok: true };
+  });
+  // 阶段一：烧字幕——ffmpeg 硬字幕，优先双语版
+  ipcMain.handle('srt:burn', (e, { filePath }) => {
+    const resolved = insideOutDir(filePath);
+    if (!resolved) return { ok: false, reason: '只允许处理下载目录内的文件' };
+    if (!fs.existsSync(resolved)) return { ok: false, reason: '文件不存在' };
+    enqueueBurn(resolved);
     return { ok: true };
   });
   // 媒体库删除：移入系统回收站（可恢复），只许删下载目录内的文件

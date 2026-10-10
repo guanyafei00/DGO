@@ -931,18 +931,46 @@ function renderLibrary() {
       </div>
       <div class="x" onclick="event.stopPropagation();openPath('${escAttr(g.files[0] ? g.files[0].path : g.key)}')" title="打开文件夹">📁</div>
       <div class="st ${open ? 'downloading' : 'queued'}">${open ? '收起 ▲' : '展开 ▼'}</div>
-    </div>${open ? (g.files.length > 200 ? `<div class="hint" style="margin:0 0 6px 44px">该组共 ${g.files.length} 个文件，仅展示最近的 200 个（按发布时间排序）</div>` : '') + g.files.slice(0, 200).map(f => `
+    </div>${open ? (g.files.length > 200 ? `<div class="hint" style="margin:0 0 6px 44px">该组共 ${g.files.length} 个文件，仅展示最近的 200 个（按发布时间排序）</div>` : '') + `<div style="margin:0 0 6px 44px">${g.files.some(f => /\.(mp4|mkv|webm|mov|avi|flv|m4a|mp3|wav)$/i.test(f.name)) ? `<span class="btn-mini" style="color:var(--acc2)" onclick="transcribeGroup('${escAttr(g.key)}')" title="把组内还没有字幕的音视频全部排队转写（串行处理）">📝 全组转写</span>` : ''}</div>` + g.files.slice(0, 200).map(f => `
       <div class="task" style="margin:0 0 6px 44px;padding:8px 12px">
         <div class="t-thumb" style="width:36px;height:28px;font-size:14px">${kindIcon(f.kind)}</div>
         <div class="t-info">
           <div class="name" title="${esc(f.path)}">${esc(f.name)}</div>
-          <div class="meta">${f.sizeText} · ${timeAgo(f.mtime)}${asrStates[f.path] ? ' · 📝 ' + (asrStates[f.path].state === 'running' ? '转写中 ' + asrStates[f.path].pct + '%' : asrStates[f.path].state === 'done' ? '已转写' : '转写失败') : ''}${srcBadge(f)}</div>
+          <div class="meta">${f.sizeText} · ${timeAgo(f.mtime)}${asrStates[f.path] ? ' · 📝 ' + (asrStates[f.path].state === 'running' ? '转写中 ' + asrStates[f.path].pct + '%' : asrStates[f.path].state === 'done' ? '已转写' : '转写失败') : ''}${jobStatus(f)}${srcBadge(f)}</div>
         </div>
-        ${/\.(mp4|mkv|webm|mov|avi|flv|m4a|mp3|wav)$/i.test(f.name) ? `<div class="x" onclick="event.stopPropagation();transcribeFile('${escAttr(f.path)}')" title="本地转写">📝</div><div class="x" onclick="event.stopPropagation();aiPanel('${escAttr(f.path)}')" title="AI 文稿助理（摘要/翻译）">✨</div>` : ''}
+        ${/\.(mp4|mkv|webm|mov|avi|flv|m4a|mp3|wav)$/i.test(f.name) ? `<div class="x" onclick="event.stopPropagation();transcribeFile('${escAttr(f.path)}')" title="本地转写出 SRT 字幕">📝</div><div class="x" onclick="event.stopPropagation();translateFile('${escAttr(f.path)}')" title="生成中英双语字幕（无字幕会先自动转写；需在设置页配置 AI）">🌐</div><div class="x" onclick="event.stopPropagation();burnFile('${escAttr(f.path)}')" title="把字幕硬烧进视频（生成新视频文件）">🎬</div><div class="x" onclick="event.stopPropagation();aiPanel('${escAttr(f.path)}')" title="AI 文稿助理（摘要/翻译）">✨</div>` : ''}
         <div class="x" onclick="openPath('${escAttr(f.path)}')" title="打开所在文件夹">📁</div>
         <div class="x" onclick="event.stopPropagation();trashFile('${escAttr(f.path)}')" title="删除（移入回收站，可恢复）" style="color:var(--red)">🗑</div>
       </div>`).join('') : ''}`;
   }).join('');
+}
+
+// ===== 阶段一：双语字幕 / 烧字幕状态 =====
+const jobStates = {};
+function jobStatus(f) {
+  const s = jobStates[f.path];
+  if (!s) return '';
+  if (s.state === 'running') return ' · 🌐 ' + (s.note || '处理中');
+  if (s.state === 'done') return ' · 🌐 完成（' + (s.note || '').replace(/^.*[\\/]/, '') + '）';
+  if (s.state === 'error') return ' · 🌐 <span style="color:var(--red)">失败：' + esc((s.note || '').slice(0, 60)) + '</span>';
+  return '';
+}
+window.fetchie.onLibJob(d => {
+  jobStates[d.filePath] = { state: d.state, note: d.note };
+  if (document.getElementById('page-lib').classList.contains('on')) loadLibrary(true);
+});
+function translateFile(p) {
+  window.fetchie.srtTranslate(p).then(r => { if (r && !r.ok) toast(r.reason); else if (r && r.ok) toast('已加入双语字幕队列（串行处理，可继续浏览）'); });
+}
+function burnFile(p) {
+  window.fetchie.srtBurn(p).then(r => { if (r && !r.ok) toast(r.reason); else if (r && r.ok) toast('已加入烧字幕队列（视频重编码较慢，请耐心等待）'); });
+}
+function transcribeGroup(key) {
+  const g = (libData.groups || []).find(x => x.key === key);
+  if (!g) return;
+  const paths = g.files.filter(f => /\.(mp4|mkv|webm|mov|avi|flv|m4a|mp3|wav)$/i.test(f.name)).map(f => f.path);
+  if (!paths.length) return toast('该组没有可转写的音视频');
+  window.fetchie.asrBatch(paths);
 }
 
 // 来源徽标：站点 + 单条/订阅 + 一键打开来源链接（老文件无索引记录 → 不显示，不撒谎）
