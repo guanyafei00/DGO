@@ -1335,9 +1335,12 @@ app.whenReady().then(() => {
           try { await fn(); console.log('[autotest] dgo6/' + name + ': OK'); }
           catch (e) { dgo6Fail = dgo6Fail || name; console.log('[autotest] dgo6/' + name + ': FAIL — ' + e.message); }
         };
-        // ① 磁盘挂起：阈值拉到 1TB → 新任务必须立即 held（不 spawn 引擎）→ 恢复阈值 → wakeHeld 回队 → 取消清理
+        // ① 磁盘挂起：阈值拉到 100TB（远超任何真实磁盘，防真机剩余超 1TB 漏判）→ 新任务必须立即 held
+        //    （不 spawn 引擎）→ 恢复阈值 → wakeHeld 回队 → 取消清理
         await dgo6Check('disk-hold', () => {
           const prevMinFree = settings.get().minFreeMB;
+          settings.set({ minFreeMB: 104857600 });        // 100TB，确保必挂起
+          queue.reconfigure({ minFreeMB: 104857600 });
           const probe = queue.add('https://www.bilibili.com/opus/dgo6-diskhold-probe', { engine: 'yt-dlp', title: 'autotest-diskhold-probe' });
           let s = queue.snapshot().find(x => x.id === probe.id);
           if (!s || s.status !== 'held' || !String(s.error || '').includes('磁盘空间不足'))
@@ -1382,7 +1385,9 @@ app.whenReady().then(() => {
         // ④ 迁移包 collect+apply 对象直调（绕 dialog）：自环导入应全部去重跳过、无 errors；畸形包逐条 errors 不中断（DGO6-04 回归）
         await dgo6Check('bundle-roundtrip', async () => {
           const udd = app.getPath('userData');
-          const c = backup.collect({ settingsFile: path.join(udd, 'settings.json'), subsFile: path.join(udd, 'subs.json') });
+          const sf = path.join(udd, 'settings.json');
+          if (!fs.existsSync(sf)) fs.writeFileSync(sf, '{}');   // 自测 userData 是全新临时目录，自给自足保证文件存在（subs.json 缺失 collect 自带容忍）
+          const c = backup.collect({ settingsFile: sf, subsFile: path.join(udd, 'subs.json') });
           if (!c.ok || c.bundle.app !== 'DGO' || !c.bundle._warning) throw new Error('collect 失败或缺 _warning');
           const beforeUrls = subs.list().map(su => su.url);
           const a = await backup.apply(JSON.parse(JSON.stringify(c.bundle)), {
