@@ -618,7 +618,7 @@ app.whenReady().then(() => {
   ipcMain.handle('settings:setMinFree', (e, { mb }) => {
     const mbN = Math.max(0, Math.floor(Number(mb) || 0));
     settings.set({ minFreeMB: mbN });
-    queue.reconfigure({ minFreeMB: mbN });
+    configure({ minFreeMB: mbN });   // 会审 DGO6-Q7：热更新必须调模块级 configure——DownloadQueue 实例没有 reconfigure 方法
     return { ok: true, minFreeMB: mbN };
   });
   // #70① 数据安全包：导出（用户选路径存 JSON）/ 导入（选文件 → 设置覆盖合并 + 订阅按 URL 合并）
@@ -672,7 +672,7 @@ app.whenReady().then(() => {
           if (p.aiUrl !== undefined || p.aiKey !== undefined || p.aiModel !== undefined) {
             const c = settings.get(); ai.configure({ url: c.aiUrl, key: c.aiKey, model: c.aiModel });
           }
-          if (p.minFreeMB !== undefined) queue.reconfigure({ minFreeMB: p.minFreeMB });
+          if (p.minFreeMB !== undefined) configure({ minFreeMB: p.minFreeMB });   // 模块级 configure（实例无 reconfigure）
           // 会审 DGO6-02③：换目录即时生效（对齐 settings:pickDir：模块级 configure 更新 OUTDIR + library 重挂 outDir）
           if (p.outDir !== undefined) {
             configure({ outDir: p.outDir });
@@ -781,7 +781,7 @@ app.whenReady().then(() => {
     if (!v.ok) return { ok: false, reason: '目录不可写：' + v.reason };
     const s = settings.set({ outDir: dir });
     // 即时切换新任务的输出目录（运行中任务沿用开始时的目录）。
-    // 注意：调模块级 configure（只会更新 OUTDIR），不能调实例 queue.configure——DownloadQueue 没有该方法（会审 P0 实锤）
+    // 注意：必须调模块级 configure（支持 outDir/proxy/minFreeMB 热更新），不能调实例 queue.configure/reconfigure——DownloadQueue 没有实例方法（会审 P0 实锤，DGO6-Q7 二次实锤）
     configure({ outDir: dir });
     library.configure({ outDir: dir, sourceGet: p => source.get(p) });   // 换目录后来源索引照常可用（按绝对路径匹配）
     return { ok: true, outDir: s.outDir };
@@ -1340,13 +1340,13 @@ app.whenReady().then(() => {
         await dgo6Check('disk-hold', () => {
           const prevMinFree = settings.get().minFreeMB;
           settings.set({ minFreeMB: 104857600 });        // 100TB，确保必挂起
-          queue.reconfigure({ minFreeMB: 104857600 });
+          configure({ minFreeMB: 104857600 });           // 模块级 configure（实例无 reconfigure）
           const probe = queue.add('https://www.bilibili.com/opus/dgo6-diskhold-probe', { engine: 'yt-dlp', title: 'autotest-diskhold-probe' });
           let s = queue.snapshot().find(x => x.id === probe.id);
           if (!s || s.status !== 'held' || !String(s.error || '').includes('磁盘空间不足'))
             throw new Error('磁盘不足应立即挂起: ' + JSON.stringify(s && { status: s.status, error: s.error }));
           settings.set({ minFreeMB: prevMinFree });
-          queue.reconfigure({ minFreeMB: prevMinFree });
+          configure({ minFreeMB: prevMinFree });
           queue.wakeHeld();
           s = queue.snapshot().find(x => x.id === probe.id);
           if (!s || s.status !== 'queued') throw new Error('空间恢复后应回队: ' + JSON.stringify(s && s.status));
@@ -1394,7 +1394,7 @@ app.whenReady().then(() => {
             settingsSetter: p => {
               const keep = { ...p }; delete keep.outDir;   // 不动正在用的下载目录
               settings.set(keep);
-              if (keep.minFreeMB !== undefined) queue.reconfigure({ minFreeMB: keep.minFreeMB });
+              if (keep.minFreeMB !== undefined) configure({ minFreeMB: keep.minFreeMB });   // 模块级 configure（实例无 reconfigure）
             },
             subsAdd: (url, name, extra) => { const r2 = subs.add(url, name); if (r2.ok && extra) subs.update(r2.sub.id, extra); return r2; },
             subsUrls: beforeUrls,
