@@ -316,14 +316,6 @@ app.whenReady().then(() => {
     return asrChain;
   }
 
-  // 来源索引：任务完成 → 记录产出文件 ↔ 来源链接/订阅标记（媒体库溯源用；老文件无记录，UI 不显示徽标）
-  queue.onDone = it => {
-    const files = (Array.isArray(it._files) && it._files.length) ? it._files : (it.filePath ? [it.filePath] : []);
-    if (!files.length) return;
-    source.record(files, { url: it.url, via: it._subs ? 'sub' : 'task', subId: it._subId || null, title: it.title });
-    log.info('source', `来源记录 ${files.length} 个文件 ← ${it.url}`);
-  };
-
   // 恢复标记：恢复时已存在的 done 任务不算「新完成」（不触发媒体库刷新）
   const resumedDone = new Set();
   const _errLogged = new Set();   // 已记过失败日志的任务 id（snapshot 是副本，标记存任务对象上无效）
@@ -379,6 +371,15 @@ app.whenReady().then(() => {
       }
     }
   });
+
+  // 来源索引：任务完成 → 记录产出文件 ↔ 来源链接/订阅标记（媒体库溯源用；老文件无记录，UI 不显示徽标）
+  // 注意：必须挂在 queue 创建之后——先前误放创建前，queue 为 null，whenReady 直接炸掉窗口都出不来（实测翻车 2026-10-10）
+  queue.onDone = it => {
+    const files = (Array.isArray(it._files) && it._files.length) ? it._files : (it.filePath ? [it.filePath] : []);
+    if (!files.length) return;
+    source.record(files, { url: it.url, via: it._subs ? 'sub' : 'task', subId: it._subId || null, title: it.title });
+    log.info('source', `来源记录 ${files.length} 个文件 ← ${it.url}`);
+  };
 
   // 恢复上次未完成的任务：downloading 中断 → error（可重试），queued → 重新排队
   for (const raw of store.load()) {
@@ -1109,6 +1110,12 @@ app.whenReady().then(() => {
   }
 
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
+}).catch(e => {
+  // 启动兜底：whenReady 里任何一步炸掉都不能静默卡死（2026-10-10 实测：queue.onDone 挂早了导致白屏卡住无任何提示）
+  console.error('[boot] startup failed:', e);
+  try { log.error('app', '启动失败: ' + (e && e.stack || e)); } catch (e2) {}
+  if (process.env.FETCHIE_AUTOTEST) app.exit(3);
+  else dialog.showErrorBox('DGO 启动失败', String(e && e.message || e).slice(0, 300) + '\n\n详细日志见 userData/logs/ 目录');
 });
 
 app.on('window-all-closed', () => {
