@@ -41,8 +41,8 @@ const RULES_INTERVAL_MS = 6 * 3600 * 1000;  // 远程风控规则 6 小时拉一
 const RULES_URL = process.env.FETCHIE_RULES_URL || 'https://fetchie-rules.app.workbuddy.host/rules.json';
 let _rulesVersion = null;   // 最近一次成功应用的远程规则版本（UI 展示用）
 // 出厂预置更新源（A4 决策 2026-10-10：主人接受「每次发版同步更新线上 update.json」义务）
-// 用户在设置页自己填的 updateUrl 优先于预置值
-const UPDATE_URL_PRESET = '';   // TODO: 发布 v0.1.1 时填入线上 update.json 地址
+// 用户在设置页自己填的 updateUrl 优先于预置值；每次发版流程：签 update.json → 部署到该地址
+const UPDATE_URL_PRESET = 'https://fetchie-rules.app.workbuddy.host/update.json';
 
 async function refreshRemoteRules() {
   try {
