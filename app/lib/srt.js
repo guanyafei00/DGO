@@ -83,16 +83,19 @@ function parseReplies(out, expectN) {
 
 // 翻译一个分块，失败/缺行自动重试一次；仍不齐则抛错（携带缺行号，方便定位）
 async function translateChunk(blocks, translator, sysHint) {
+  let missing = [];
   for (let attempt = 1; attempt <= 2; attempt++) {
     const out = await translator(buildPrompt(blocks), sysHint);
     const map = parseReplies(out, blocks.length);
-    const missing = blocks.filter((_, i) => !map.has(i + 1)).map((_, i) => i + 1);
+    missing = blocks.filter((_, i) => !map.has(i + 1)).map((_, i) => i + 1);
     if (missing.length === 0) return blocks.map((_, i) => map.get(i + 1));
-    if (attempt === 1) sysHint = `注意：你上次漏译了第 ${missing.join('、')} 条。重新输出全部 ${blocks.length} 行，格式严格为「N|译文」。原文：\n`;
+    // 会审 DGO6-09：每轮失败后都用本轮缺失行重建提示——第三次调用拿到的是最近一轮的缺失清单，
+    // 而非 attempt 1 的陈旧清单（两轮漏的行可能不同）
+    sysHint = `注意：你上次漏译了第 ${missing.join('、')} 条。重新输出全部 ${blocks.length} 行，格式严格为「N|译文」。原文：\n`;
   }
   const out = await translator(buildPrompt(blocks), sysHint);
   const map = parseReplies(out, blocks.length);
-  const missing = blocks.filter((_, i) => !map.has(i + 1)).map((_, i) => i + 1);
+  missing = blocks.filter((_, i) => !map.has(i + 1)).map((_, i) => i + 1);
   if (missing.length) throw new Error('模型漏译 ' + missing.length + ' 条（第 ' + missing.slice(0, 5).join('、') + ' 行），可重试或换模型');
   return blocks.map((_, i) => map.get(i + 1));
 }

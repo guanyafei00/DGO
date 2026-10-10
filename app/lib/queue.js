@@ -110,6 +110,8 @@ class DownloadQueue {
     if (['queued', 'downloading', 'held'].includes(it.status)) {
       killTree(it._child);
       if (it._wasActive) { this.active = Math.max(0, this.active - 1); it._wasActive = false; }
+      // 会审 DGO6-07：cancel 立即清磁盘巡检 timer（不留 30s 空转；兜底由 timer 自清分支与 close 事件覆盖）
+      if (it._diskTimer) { clearInterval(it._diskTimer); it._diskTimer = null; }
       it.status = 'canceled';
       this.tick();
       this.push();
@@ -240,6 +242,9 @@ class DownloadQueue {
   }
 
   run(it) {
+    // 会审 DGO6-07：run 序号——重试/磁盘挂起重跑会再次 run 同一 it，旧 run 的 close/error/磁盘巡检
+    // 事件晚到时凭 seq 识别并丢弃，绝不误清新一轮的 timer 或把新任务打成 error
+    const seq = (it._runSeq = (it._runSeq || 0) + 1);
     it.status = 'downloading';
     if (!Array.isArray(it._files)) it._files = [];   // 本次尝试产出的文件清单（跨重试累积；重试时引擎会跳过已存在文件）
     this.active++;
@@ -270,7 +275,7 @@ class DownloadQueue {
 
     // #70① 下载中每 30 秒查一次磁盘：写满前主动挂起（杀进程树防半截文件），空间恢复后在 wakeHeld 回队
     it._diskTimer = setInterval(() => {
-      if (it.status !== 'downloading') { clearInterval(it._diskTimer); it._diskTimer = null; return; }
+      if (seq !== it._runSeq || it.status !== 'downloading') { clearInterval(it._diskTimer); it._diskTimer = null; return; }
       if (diskLow()) {
         killTree(child);
         it.status = 'held';
@@ -287,6 +292,7 @@ class DownloadQueue {
     child.stdout.on('data', d => this.parseOutput(it, decOut.decode(d, { stream: true })));
     child.stderr.on('data', d => this.parseOutput(it, decErr.decode(d, { stream: true })));
     child.on('error', e => {
+      if (seq !== it._runSeq) return;   // 会审 DGO6-07：旧 run 的 spawn 错误事件，新 run 已接管
       // 引擎文件缺失（首启在线引导还没下载完 / 杀软误删）→ 给出可行动的提示而非裸 ENOENT
       clearDiskTimer();
       const msg = /ENOENT|spawn/i.test(String(e)) && !fs.existsSync(args.exe)
@@ -295,6 +301,7 @@ class DownloadQueue {
       done('error', { error: msg });
     });
     child.on('close', code => {
+      if (seq !== it._runSeq) return;   // 会审 DGO6-07：旧 run 的进程退出事件——不得清新一轮的 _diskTimer、不得判结果
       clearDiskTimer();
       if (!it._wasActive || it.status === 'canceled') return;   // 幂等守卫（含 cancel 后的 close）
       if (code === 0) {

@@ -7,13 +7,22 @@ const path = require('path');
 const { atomicWrite, readJson } = require('./jsonfile');
 
 let FILE = null;
-let data = { version: 1, docs: {}, index: {} };   // docs: path → { mtime, title, up, size } ; index: token → [path,...]
+// 会审 DGO6-01：docs/index 必须是 null 原型对象——普通对象的原型链上有 constructor/toString/hasOwnProperty，
+// 文稿内容含这些词时 reindex 写入会命中原型键、search 的 `data.index[tk]` 判断被原型污染
+let data = { version: 1, docs: Object.create(null), index: Object.create(null) };   // docs: path → { mtime, title, up, size } ; index: token → [path,...]
+
+// JSON.parse（readJson 读回）产出普通对象，必须重建为 null 原型；非对象输入给空表
+function toNullProto(obj) {
+  return obj && typeof obj === 'object' && !Array.isArray(obj)
+    ? Object.assign(Object.create(null), obj)
+    : Object.create(null);
+}
 
 function configure({ file }) {
   FILE = file;
   data = readJson(FILE, { version: 1, docs: {}, index: {} }, v => v && v.docs && v.index);
-  if (!data.docs) data.docs = {};
-  if (!data.index) data.index = {};
+  data.docs = toNullProto(data.docs);
+  data.index = toNullProto(data.index);
 }
 
 // 分词：中英文混排通用。中文 → 相邻 2 字组（覆盖绝大多数短语查询）；英文/数字 → 小写词（≥2 字符）。
@@ -83,7 +92,20 @@ function search(q, limit = 30) {
   for (const tk of tokens) {
     const arr = data.index[tk];
     if (!arr || !arr.length) return [];   // 任一 token 无文档 → AND 必空
-    candidates = candidates === null ? new Set(arr) : new Set([...candidates].filter(p => arr.includes(p)));
+    // 会审 DGO6-05：交集改 Set 成员判断——原 `arr.includes(p)` 是 O(C×L) 线性扫，
+    // 数万文档 × 常用 2-gram 会在主进程同步执行时卡死 IPC；改后每轮 O(C+L)。
+    // 始终迭代较短一侧、对较长一侧建 Set：
+    if (candidates === null) candidates = new Set(arr);
+    else if (candidates.size <= arr.length) {
+      const big = new Set(arr);
+      const next = new Set();
+      for (const p of candidates) if (big.has(p)) next.add(p);
+      candidates = next;
+    } else {
+      const next = new Set();
+      for (const p of arr) if (candidates.has(p)) next.add(p);
+      candidates = next;
+    }
     if (!candidates.size) return [];
   }
   const qlower = query.toLowerCase();
@@ -94,7 +116,15 @@ function search(q, limit = 30) {
   // snippet：读文件找首个命中位置（cap 30 篇，防大结果集读盘）
   for (const r of results.slice(0, limit)) {
     try {
-      const text = fs.readFileSync(r.path, 'utf-8');
+      // 会审 DGO6-05：openSync/readSync 只读前 256KB——转写文稿可达数百 KB，整篇同步读会拖慢 IPC；
+      // 尾部截断最多损失一个多字节字符（解码替换），snippet 足够
+      const fd = fs.openSync(r.path, 'r');
+      let text = '';
+      try {
+        const buf = Buffer.alloc(256 * 1024);
+        const n = fs.readSync(fd, buf, 0, buf.length, 0);
+        text = buf.toString('utf-8', 0, n);
+      } finally { fs.closeSync(fd); }
       const lower = text.toLowerCase();
       // 优先整词位置，退化到首个查询 token 位置
       let pos = lower.indexOf(qlower);

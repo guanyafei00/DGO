@@ -6,12 +6,14 @@ const fs = require('fs');
 
 const BUNDLE_VERSION = 1;
 
-// settings 恢复白名单（防导入包注入未知键）
-const SETTINGS_KEYS = ['outDir', 'notifyDone', 'notifyMode', 'aiUrl', 'aiKey', 'aiModel', 'asrMirror'];
+// settings 恢复白名单（防导入包注入未知键）。会审 DGO6-03：补 minFreeMB（#70① 新增设置项）
+const SETTINGS_KEYS = ['outDir', 'notifyDone', 'notifyMode', 'aiUrl', 'aiKey', 'aiModel', 'asrMirror', 'minFreeMB'];
 
 function buildBundle({ settings, subs }) {
   return {
     app: 'DGO', bundleVersion: BUNDLE_VERSION, at: new Date().toISOString(),
+    // 会审 DGO6-15②：明文 Key 风险提示（消费端应展示/保留该字段）
+    _warning: '本文件含 AI API Key 明文，请妥善保管，不要分享',
     settings, subs,
   };
 }
@@ -35,7 +37,9 @@ function collect(paths) {
   } catch (e) { return { ok: false, reason: '读取配置失败: ' + e.message }; }
 }
 
-// 导入：settingsSetter(patch) 写设置；subsAdd(url) 走正常添加流程（复用分类/命名）；返回摘要
+// 导入：settingsSetter(patch) 写设置；subsAdd(url, name, extra) 走正常添加流程（复用分类/命名），
+//   extra = 包内订阅的 group/intervalMin/userPaused/autoTranscribe（会审 DGO6-03，调用方自行恢复）；
+// 返回摘要。全程逐条防御：单个坏元素只记 errors，绝不中断整体（会审 DGO6-04）
 async function apply(bundle, { settingsSetter, subsAdd, subsUrls }) {
   if (!bundle || bundle.app !== 'DGO' || !bundle.bundleVersion) return { ok: false, reason: '不是有效的 DGO 迁移包' };
   const out = { settingsApplied: 0, subsAdded: 0, subsSkipped: 0, errors: [] };
@@ -43,16 +47,36 @@ async function apply(bundle, { settingsSetter, subsAdd, subsUrls }) {
   const s = bundle.settings || {};
   const patch = {};
   for (const k of SETTINGS_KEYS) if (s[k] !== undefined && s[k] !== null && s[k] !== '') patch[k] = s[k];
+  // 会审 DGO6-02①：outDir 必须是字符串，非字符串剔出 patch（目录合法性由调用方 settingsSetter 校验）
+  if (patch.outDir !== undefined && typeof patch.outDir !== 'string') {
+    delete patch.outDir;
+    out.errors.push('outDir: 类型非法（应为字符串路径），已跳过');
+  }
   if (Object.keys(patch).length) { settingsSetter(patch); out.settingsApplied = Object.keys(patch).length; }
   // 2) 订阅按 URL 合并（URL 已存在的跳过；导入包里的 URL 必须能被当前版本分类，失败的记 errors 不中断）
+  // 会审 DGO6-04：subs 非数组按空清单处理并报错
+  let subsIn = bundle.subs;
+  if (!Array.isArray(subsIn)) {
+    if (subsIn !== undefined && subsIn !== null) out.errors.push('subs 字段类型非法（应为数组），已按空清单处理');
+    subsIn = [];
+  }
   const existing = new Set((subsUrls || []).map(u => String(u).trim()));
-  for (const sub of (bundle.subs || [])) {
-    const url = String(sub.url || '').trim();
-    if (!url) continue;
-    if (existing.has(url)) { out.subsSkipped++; continue; }
-    const r = subsAdd(url, sub.name || undefined);
-    if (r && r.ok) { out.subsAdded++; existing.add(url); }
-    else out.errors.push((sub.name || url) + ': ' + ((r && r.reason) || '添加失败').slice(0, 60));
+  for (const sub of subsIn) {
+    try {
+      if (!sub || typeof sub !== 'object' || Array.isArray(sub)) { out.errors.push('订阅条目格式非法，已跳过'); continue; }
+      const url = String(sub.url || '').trim();
+      if (!url) { out.errors.push(String(sub.name || '（无名订阅）') + ': URL 为空，已跳过'); continue; }
+      if (existing.has(url)) { out.subsSkipped++; continue; }
+      // 会审 DGO6-03：分组/频率/暂停/自动转写随包恢复（未带字段的旧包不受影响）
+      const extra = {};
+      if (sub.group !== undefined) extra.group = sub.group;
+      if (sub.intervalMin !== undefined) extra.intervalMin = sub.intervalMin;
+      if (sub.userPaused !== undefined) extra.userPaused = sub.userPaused;
+      if (sub.autoTranscribe !== undefined) extra.autoTranscribe = sub.autoTranscribe;
+      const r = subsAdd(url, sub.name || undefined, extra);
+      if (r && r.ok) { out.subsAdded++; existing.add(url); }
+      else out.errors.push((sub.name || url) + ': ' + ((r && r.reason) || '添加失败').slice(0, 60));
+    } catch (e) { out.errors.push('订阅导入异常: ' + String(e.message || e).slice(0, 60)); }
   }
   return { ok: true, ...out };
 }

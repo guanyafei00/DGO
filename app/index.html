@@ -642,7 +642,7 @@ async function saveMinFree() {
 async function doExport() {
   const r = await window.fetchie.settingsExport();
   if (!r.ok) { if (r.reason !== '已取消') toast('导出失败：' + r.reason); return; }
-  toast(`迁移包已导出 ✓（${r.counts.subs} 个订阅，${r.counts.settings} 项设置）`);
+  toast(`迁移包已导出 ✓（${r.counts.subs} 个订阅，${r.counts.settings} 项设置）— 含 AI Key 明文，请妥善保管`);   // 会审 DGO6-15②：明文 Key 风险提示
 }
 async function doImport() {
   const r = await window.fetchie.settingsImport();
@@ -751,6 +751,7 @@ async function openCookieDir() {
 // ===== 订阅 =====
 let subsItems = [];
 let _goneFilesMap = {};   // subId -> { goneId: [本地文件路径...] }
+let _goneFilesKey = {};   // subId -> 缓存键（gone 清单未变则跳过重扫，会审 DGO6-12：防 renderSubs 并发重复走查）
 async function loadSubs() {
   subsItems = await window.fetchie.subsList();
   // #70② 分组过滤下拉：同步分组清单
@@ -776,7 +777,11 @@ async function renderSubs() {
   for (const s of items) {
     const ago = s.lastCheck ? Math.round((Date.now() - s.lastCheck) / 60000) : null;
     if (s.sourceDeleted) {
-      try { const r = await window.fetchie.subsGoneFiles(s.id); _goneFilesMap[s.id] = (r && r.files) || {}; } catch (e) {}
+      // 会审 DGO6-12：gone 清单未变直接复用缓存，不再每次渲染都发 subsGoneFiles（主进程全目录走查）
+      const gk = s.id + '|' + (s.gone || []).join(',');
+      if (_goneFilesKey[s.id] !== gk) {
+        try { const r = await window.fetchie.subsGoneFiles(s.id); _goneFilesMap[s.id] = (r && r.files) || {}; _goneFilesKey[s.id] = gk; } catch (e) {}
+      }
     }
     const paused = s.userPaused || s.paused;
     const pausedTag = s.userPaused ? '<span style="color:var(--txt2);font-size:11px">（⏸ 已暂停）</span>'
@@ -997,8 +1002,10 @@ function setLibKw(v) {
   // 标题过滤立即反馈；文稿内容检索防抖 400ms（避免每敲一键扫索引）
   renderLibrary();
   _txtSearchTimer = setTimeout(async () => {
+    const q = libKw;   // 会审 DGO6-11：闭包捕获本次查询词，在途旧查询返回后不再覆盖新输入的结果
     try {
-      const r = await window.fetchie.textSearch(libKw, 50);
+      const r = await window.fetchie.textSearch(q, 50);
+      if (libKw !== q) return;
       _txtHits = {};
       for (const it of (r.results || [])) _txtHits[it.path] = it;
       renderLibrary();
@@ -1060,8 +1067,8 @@ const jobStates = {};
 function jobStatus(f) {
   const s = jobStates[f.path];
   if (!s) return '';
-  if (s.state === 'running') return ' · 🌐 ' + (s.note || '处理中');
-  if (s.state === 'done') return ' · 🌐 完成（' + (s.note || '').replace(/^.*[\\/]/, '') + '）';
+  if (s.state === 'running') return ' · 🌐 ' + esc(s.note || '处理中');   // 会审 DGO6-13：note 统一过 esc，防文件名/错误信息注入
+  if (s.state === 'done') return ' · 🌐 完成（' + esc((s.note || '').replace(/^.*[\\/]/, '')) + '）';
   if (s.state === 'error') return ' · 🌐 <span style="color:var(--red)">失败：' + esc((s.note || '').slice(0, 60)) + '</span>';
   return '';
 }
@@ -1091,7 +1098,8 @@ async function summarizeGroup(key) {
     <div style="font-size:12.5px;color:var(--txt2,#888);margin-bottom:10px">正在把组内转写文稿（最多 20 篇）交给 AI 做结构化总结，长内容约需一两分钟…</div>
     <div id="gsumOut" style="white-space:pre-wrap;font-size:13px;line-height:1.7;background:rgba(127,127,127,.08);border-radius:9px;padding:12px;max-height:46vh;overflow:auto">⏳ 生成中…</div>`);
   try {
-    const r = await window.fetchie.libSummarize(key);
+    // 会审 DGO6-06：文件清单由前端 libData 提供，主进程不再全量重扫媒体库
+    const r = await window.fetchie.libSummarize(key, g.files.map(f => f.path));
     if (!r.ok) { $('gsumOut').textContent = '失败：' + (r.reason || '未知错误'); return; }
     $('gsumOut').textContent = r.md;
     const div = document.createElement('div');

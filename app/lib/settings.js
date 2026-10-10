@@ -20,7 +20,10 @@ function configure({ file, defaultOutDir }) {
 
 function get() { return { ...data }; }
 function set(patch) {
-  Object.assign(data, patch);
+  const p = { ...(patch || {}) };
+  // 会审 DGO6-08：minFreeMB 写入前归一化（负数/非数字归 0＝关闭检测；与 configure 启动路径同规则）
+  if (p.minFreeMB !== undefined) p.minFreeMB = Math.max(0, Math.floor(Number(p.minFreeMB) || 0));
+  Object.assign(data, p);
   try { atomicWrite(FILE, JSON.stringify(data, null, 2)); } catch (e) { console.warn('[settings] save fail:', e.message); }
   return get();
 }
