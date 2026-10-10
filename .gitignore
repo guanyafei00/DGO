@@ -50,3 +50,8 @@ app/.npmcache/
 # 临时
 *.log
 .DS_Store
+
+# 运行时临时文件（DGO6 收尾）：autotest 任务映射 / gdl 编码配置 / 本地装机脚本
+*.tmp
+app/resources/gdl-utf8.json
+run_install.py

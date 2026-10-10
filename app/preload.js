@@ -27,7 +27,7 @@ contextBridge.exposeInMainWorld('fetchie', {
   subsSetKw: (id, kw) => ipcRenderer.invoke('subs:setKw', { id, kw }),
   subsUpdate: (id, patch) => ipcRenderer.invoke('subs:update', { id, patch }),
   textSearch: (q, limit) => ipcRenderer.invoke('text:search', { q, limit }),
-  libSummarize: (key) => ipcRenderer.invoke('lib:summarize', { key }),
+  libSummarize: (key, paths) => ipcRenderer.invoke('lib:summarize', { key, paths: Array.isArray(paths) ? paths : [] }),
   settingsExport: () => ipcRenderer.invoke('settings:export'),
   settingsImport: () => ipcRenderer.invoke('settings:import'),
   settingsSetMinFree: (mb) => ipcRenderer.invoke('settings:setMinFree', { mb }),

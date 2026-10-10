@@ -76,9 +76,12 @@ function breakerRemainMs(url) {
 function reportFailure(url, isRateLimit) {
   const key = stateKey(url);
   const m = matchHost(url);
-  const threshold = m ? m.breakerThreshold : FALLBACK.breakerThreshold;
-  const cooldown = m ? m.breakerCooldownMs : FALLBACK.breakerCooldownMs;
-  const levels = m ? m.backoffLevels : FALLBACK.backoffLevels;
+  // 会审 DGO6-Q7 兜底：validRule 只校验已存在的字段，远程规则可整体省略这三项——
+  // 缺失时必须回落 FALLBACK，否则 Date.now()+undefined=NaN → isBreakered 恒 false，熔断静默失效；
+  // backoffLevels 缺失更会在档位升级时直接 TypeError
+  const threshold = (m && m.breakerThreshold !== undefined) ? m.breakerThreshold : FALLBACK.breakerThreshold;
+  const cooldown = (m && m.breakerCooldownMs !== undefined) ? m.breakerCooldownMs : FALLBACK.breakerCooldownMs;
+  const levels = (m && m.backoffLevels) ? m.backoffLevels : FALLBACK.backoffLevels;
   const st = state._hosts[key] || (state._hosts[key] = { level: 0, failures: 0, breakerUntil: 0 });
   st.failures = (st.failures || 0) + 1;
   if (isRateLimit) st.level = Math.min((st.level || 0) + 1, levels.length - 1);

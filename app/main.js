@@ -37,6 +37,7 @@ const source = require('./lib/source');
 const srtLib = require('./lib/srt');
 const backup = require('./lib/backup');
 const textindex = require('./lib/textindex');
+const { atomicWrite } = require('./lib/jsonfile');   // 会审 DGO6-15①：迁移包导出防半截文件
 
 const CHECK_INTERVAL_MS = 10 * 60 * 1000;   // 每站 10 分钟增量检查
 const RULES_INTERVAL_MS = 6 * 3600 * 1000;  // 远程风控规则 6 小时拉一轮
@@ -312,13 +313,12 @@ app.whenReady().then(() => {
     })).then(r => {
       if (win && !win.isDestroyed()) win.webContents.send('asr:done', { filePath: mediaPath, ...r });
       if (win && !win.isDestroyed()) win.webContents.send('library:changed');
-      try {   // #70③：新文稿进全文索引
-        const up = (mediaPath.split(/[\\/]/).slice(-2, -1)[0]) || '';
-        textindex.reindex([{ path: mediaPath, title: path.basename(mediaPath), up }]);
-      } catch (e) {}
-      if ((!win.isVisible() || win.isMinimized()) && Notification.isSupported()) {
+      // 会审 DGO6-10：即时 textindex.reindex 已移除——library:scan 里的 reindex 用媒体库分组的
+      // g.uploader 作权威 up；此处按父目录猜 up 在三级目录结构下会错记且 mtime 不变永不修正
+      // 会审 DGO6-15③：通知分支补 win 存活守卫（对齐同块其余分支）
+      if (win && !win.isDestroyed() && (!win.isVisible() || win.isMinimized()) && Notification.isSupported()) {
         const n = new Notification({ title: '转写完成 ✓', body: path.basename(mediaPath), silent: false });
-        n.on('click', () => { if (win) { win.show(); win.focus(); } });
+        n.on('click', () => { if (win && !win.isDestroyed()) { win.show(); win.focus(); } });
         n.show();
       }
       return r;
@@ -618,7 +618,7 @@ app.whenReady().then(() => {
   ipcMain.handle('settings:setMinFree', (e, { mb }) => {
     const mbN = Math.max(0, Math.floor(Number(mb) || 0));
     settings.set({ minFreeMB: mbN });
-    queue.reconfigure({ minFreeMB: mbN });
+    configure({ minFreeMB: mbN });   // 会审 DGO6-Q7：热更新必须调模块级 configure——DownloadQueue 实例没有 reconfigure 方法
     return { ok: true, minFreeMB: mbN };
   });
   // #70① 数据安全包：导出（用户选路径存 JSON）/ 导入（选文件 → 设置覆盖合并 + 订阅按 URL 合并）
@@ -632,7 +632,7 @@ app.whenReady().then(() => {
       if (r.canceled || !r.filePath) return { ok: false, reason: '已取消' };
       const bundle = backup.collect({ settingsFile: path.join(app.getPath('userData'), 'settings.json'), subsFile: path.join(app.getPath('userData'), 'subs.json') });
       if (!bundle.ok) return bundle;
-      fs.writeFileSync(r.filePath, JSON.stringify(bundle.bundle, null, 2), 'utf-8');
+      atomicWrite(r.filePath, JSON.stringify(bundle.bundle, null, 2));   // 会审 DGO6-15①：tmp+rename，磁盘满不再留半截 JSON
       log.info('backup', `导出迁移包 → ${r.filePath}（${bundle.counts.subs} 个订阅）`);
       return { ok: true, file: r.filePath, counts: bundle.counts };
     } catch (e) { return { ok: false, reason: e.message }; }
@@ -645,41 +645,85 @@ app.whenReady().then(() => {
       });
       if (r.canceled || !r.filePaths || !r.filePaths[0]) return { ok: false, reason: '已取消' };
       const bundle = JSON.parse(fs.readFileSync(r.filePaths[0], 'utf-8'));
+      // 会审 DGO6-15②：导入前明示影响面（覆盖设置项数 / 订阅数 / AI 密钥），用户确认才执行
+      const bs = (bundle && bundle.settings) || {};
+      const pendingKeys = backup.SETTINGS_KEYS.filter(k => bs[k] !== undefined && bs[k] !== null && bs[k] !== '');
+      const pendingSubs = Array.isArray(bundle.subs) ? bundle.subs.filter(x => x && typeof x === 'object' && String(x.url || '').trim()).length : 0;
+      const mb = await dialog.showMessageBox(win, {
+        type: 'warning',
+        title: '确认导入迁移包',
+        message: `将覆盖 ${pendingKeys.length} 项设置${pendingKeys.includes('aiUrl') || pendingKeys.includes('aiKey') ? '（含 AI 接口地址/密钥）' : ''}，并合并 ${pendingSubs} 个订阅。`,
+        detail: '覆盖项包括 AI Key 明文等接口配置；已有订阅按 URL 去重跳过，现有数据不会被删除。',
+        buttons: ['取消', '导入'],
+        defaultId: 0, cancelId: 0, noLink: true,
+      });
+      if (mb.response !== 1) return { ok: false, reason: '已取消' };
+      const setterErrors = [];   // 会审 DGO6-02②：settingsSetter 内校验失败的键经此上报（apply 的 errors 数组此时还没返回）
+      let droppedOutDir = false;
       const out = await backup.apply(bundle, {
         settingsSetter: patch => {
-          settings.set(patch);
-          if (patch.aiUrl !== undefined || patch.aiKey !== undefined || patch.aiModel !== undefined) {
+          const p = { ...patch };
+          // 会审 DGO6-02②：outDir 导入前先过目录校验，失败剔除该键（不写坏目录）
+          if (p.outDir !== undefined) {
+            const v = settings.validateDir(p.outDir);
+            if (!v.ok) { delete p.outDir; droppedOutDir = true; setterErrors.push('outDir: 目录不可写（' + v.reason + '），已保留当前下载目录'); }
+          }
+          settings.set(p);
+          if (p.aiUrl !== undefined || p.aiKey !== undefined || p.aiModel !== undefined) {
             const c = settings.get(); ai.configure({ url: c.aiUrl, key: c.aiKey, model: c.aiModel });
           }
-          if (patch.minFreeMB !== undefined) queue.reconfigure({ minFreeMB: patch.minFreeMB });
+          if (p.minFreeMB !== undefined) configure({ minFreeMB: p.minFreeMB });   // 模块级 configure（实例无 reconfigure）
+          // 会审 DGO6-02③：换目录即时生效（对齐 settings:pickDir：模块级 configure 更新 OUTDIR + library 重挂 outDir）
+          if (p.outDir !== undefined) {
+            configure({ outDir: p.outDir });
+            library.configure({ outDir: p.outDir, sourceGet: pp => source.get(pp) });
+          }
         },
-        subsAdd: (url, name) => { const a = subs.add(url, name); if (a.ok) checkAllSubs(a.sub.id).catch(() => {}); return a; },
-        subsUrls: subs.list().map(s => s.url),
+        subsAdd: (url, name, extra) => {
+          const a = subs.add(url, name);
+          // 会审 DGO6-03：迁移包内订阅属性（分组/频率/暂停/自动转写）随添加恢复；subs.update 白名单钳制类型
+          if (a.ok && extra && typeof extra === 'object') {
+            const u = subs.update(a.sub.id, extra);
+            if (u && u.ok && u.sub) a.sub = { ...a.sub, group: u.sub.group, intervalMin: u.sub.intervalMin, userPaused: u.sub.userPaused, autoTranscribe: u.sub.autoTranscribe };
+          }
+          if (a.ok) checkAllSubs(a.sub.id).catch(() => {});
+          return a;
+        },
+        subsUrls: subs.list().map(su => su.url),
       });
-      if (out.ok) log.info('backup', `导入迁移包：设置 ${out.settingsApplied} 项，订阅 +${out.subsAdded}（跳过 ${out.subsSkipped}）`);
+      if (out.ok) {
+        if (droppedOutDir) out.settingsApplied = Math.max(0, out.settingsApplied - 1);   // 被剔除的键不计入成功数
+        if (setterErrors.length) out.errors.push(...setterErrors);
+        log.info('backup', `导入迁移包：设置 ${out.settingsApplied} 项，订阅 +${out.subsAdded}（跳过 ${out.subsSkipped}）`);
+      }
       return out;
     } catch (e) { return { ok: false, reason: '导入失败: ' + e.message }; }
   });
   // #70③ 文稿全文搜索
-  ipcMain.handle('text:search', (e, { q, limit }) => ({ ok: true, results: textindex.search(q, limit || 30), stats: textindex.stats() }));
+  ipcMain.handle('text:search', (e, { q, limit }) => {
+    const lim = Math.min(100, Math.max(1, Number(limit) || 30));   // 会审 DGO6-05：limit 钳制，防渲染层传大值放大 snippet 读盘
+    return { ok: true, results: textindex.search(q, lim), stats: textindex.stats() };
+  });
   // #70④ 组级 AI 摘要：收集组内转写文稿（cap 20 篇 × 8k 字）→ AI 结构化总结 → 存组目录 AI摘要-日期.md
-  ipcMain.handle('lib:summarize', async (e, { key }) => {
+  ipcMain.handle('lib:summarize', async (e, { key, paths }) => {
     if (!ai.ready()) return { ok: false, reason: '请先在设置页配置 AI 接口（地址 / Key / 模型）' };
-    const g = (await library.scan()).groups.find(x => x.key === key);
-    if (!g) return { ok: false, reason: '分组不存在' };
+    // 会审 DGO6-06：不再全量重扫媒体库——文件清单由渲染层传入，逐个过 insideOutDir 校验防路径注入
+    const list = (Array.isArray(paths) ? paths : []).map(p => insideOutDir(p)).filter(Boolean);
+    if (!list.length) return { ok: false, reason: '分组不存在或没有有效文件' };
     const txts = [];
-    for (const f of g.files) {
-      const t = f.path.replace(/\.[^.\\/]+$/, '') + '.txt';
+    for (const p of list) {
+      const t = p.replace(/\.[^.\\/]+$/, '') + '.txt';
       if (!fs.existsSync(t)) continue;
-      try { txts.push({ name: f.name, text: fs.readFileSync(t, 'utf-8').slice(0, 8000) }); } catch (e2) {}
+      try { txts.push({ name: path.basename(p), text: fs.readFileSync(t, 'utf-8').slice(0, 8000) }); } catch (e2) {}
       if (txts.length >= 20) break;   // 防超长+费用失控
     }
     if (!txts.length) return { ok: false, reason: '该组还没有转写文稿——先点「📝 全组转写」' };
     const content = txts.map(t => `## ${t.name.replace(/\.[^.]+$/, '')}\n${t.text}`).join('\n\n');
     const md = await ai.run('groupSummary', content);
-    const outFile = path.join(path.dirname(g.files[0].path), `AI摘要-${new Date().toISOString().slice(0, 10)}.md`);
+    // 会审 DGO6-06：组目录取第一个有效 path 的 dirname
+    const outFile = path.join(path.dirname(list[0]), `AI摘要-${new Date().toISOString().slice(0, 10)}.md`);
     fs.writeFileSync(outFile, md, 'utf-8');
-    log.info('ai', `组级摘要完成 ${g.uploader}（${txts.length} 篇）→ ${outFile}`);
+    log.info('ai', `组级摘要完成（${key || '未分组'}，${txts.length} 篇）→ ${outFile}`);
     if (win && !win.isDestroyed()) win.webContents.send('library:changed');
     return { ok: true, out: outFile, md, docs: txts.length };
   });
@@ -737,7 +781,7 @@ app.whenReady().then(() => {
     if (!v.ok) return { ok: false, reason: '目录不可写：' + v.reason };
     const s = settings.set({ outDir: dir });
     // 即时切换新任务的输出目录（运行中任务沿用开始时的目录）。
-    // 注意：调模块级 configure（只会更新 OUTDIR），不能调实例 queue.configure——DownloadQueue 没有该方法（会审 P0 实锤）
+    // 注意：必须调模块级 configure（支持 outDir/proxy/minFreeMB 热更新），不能调实例 queue.configure/reconfigure——DownloadQueue 没有实例方法（会审 P0 实锤，DGO6-Q7 二次实锤）
     configure({ outDir: dir });
     library.configure({ outDir: dir, sourceGet: p => source.get(p) });   // 换目录后来源索引照常可用（按绝对路径匹配）
     return { ok: true, outDir: s.outDir };
@@ -897,7 +941,10 @@ app.whenReady().then(() => {
         if (real.paused) { results.push({ id: sub.id, ok: false, reason: '已暂停（连续失败）' }); continue; }
         // #70② 频率档位：订阅可设更长间隔（10/30/60 分钟）；手动单查（onlyId）不受限
         if (!onlyId && real.intervalMin > CHECK_INTERVAL_MS / 60000 &&
-            Date.now() - (real.lastCheck || 0) < real.intervalMin * 60 * 1000) continue;
+            Date.now() - (real.lastCheck || 0) < real.intervalMin * 60 * 1000) {
+          results.push({ id: sub.id, name: sub.name, ok: false, reason: '间隔未到（订阅 ⚙ 可调频率）' });   // 会审 DGO6-14：跳过留痕，UI 不再静默
+          continue;
+        }
         try {
           const gdlSeqs = [];   // gallery-dl 型订阅：新内容只有序号没有独立 URL，先收集再合并连续段
           const r = await subs.checkSub(real, (s, it) => {
@@ -1248,7 +1295,7 @@ app.whenReady().then(() => {
           }, 1000);
         });
         for (const s of snap.filter(x => ids.has(x.id))) console.log('[autotest] task:', s.status, s.engine, s.progress + '%', s.fileCount || '', s.error || '');
-        const pass = snap.filter(x => ids.has(x.id)).every(s => s.status === 'done');
+        let pass = snap.filter(x => ids.has(x.id)).every(s => s.status === 'done');
         // 音频模式延后入队：t1 已 done，同 URL 不再被去重拦截（顺带验证 done 后可重下）
         const t3 = queue.add(AUDIO_URL, { engine: 'yt-dlp', title: 'autotest-audio', _audio: true });
         if (!t3 || t3.duplicate || t3.id === t1.id) throw new Error('audio task blocked by dedup (t1 should be done)');
@@ -1280,6 +1327,88 @@ app.whenReady().then(() => {
           (lib.totalSize / 1048576).toFixed(1) + 'MB',
           lib.groups.slice(0, 3).map(g => `${g.site}/${g.uploader}(${g.fileCount})`).join(', '));
         if (lib.totalFiles < 1) throw new Error('library scan found no files');
+
+        // ===== DGO6 QA 回归检查点（v0.1.3 修复轮）：磁盘挂起 / 文稿检索 / 字幕翻译 / 迁移包 =====
+        // 任何一项失败：pass 置 false → 最终输出 M1_E2E_FAIL（不中断后续 RSS 检查）
+        let dgo6Fail = null;
+        const dgo6Check = async (name, fn) => {
+          try { await fn(); console.log('[autotest] dgo6/' + name + ': OK'); }
+          catch (e) { dgo6Fail = dgo6Fail || name; console.log('[autotest] dgo6/' + name + ': FAIL — ' + e.message); }
+        };
+        // ① 磁盘挂起：阈值拉到 100TB（远超任何真实磁盘，防真机剩余超 1TB 漏判）→ 新任务必须立即 held
+        //    （不 spawn 引擎）→ 恢复阈值 → wakeHeld 回队 → 取消清理
+        await dgo6Check('disk-hold', () => {
+          const prevMinFree = settings.get().minFreeMB;
+          settings.set({ minFreeMB: 104857600 });        // 100TB，确保必挂起
+          configure({ minFreeMB: 104857600 });           // 模块级 configure（实例无 reconfigure）
+          const probe = queue.add('https://www.bilibili.com/opus/dgo6-diskhold-probe', { engine: 'yt-dlp', title: 'autotest-diskhold-probe' });
+          let s = queue.snapshot().find(x => x.id === probe.id);
+          if (!s || s.status !== 'held' || !String(s.error || '').includes('磁盘空间不足'))
+            throw new Error('磁盘不足应立即挂起: ' + JSON.stringify(s && { status: s.status, error: s.error }));
+          settings.set({ minFreeMB: prevMinFree });
+          configure({ minFreeMB: prevMinFree });
+          queue.wakeHeld();
+          s = queue.snapshot().find(x => x.id === probe.id);
+          if (!s || s.status !== 'queued') throw new Error('空间恢复后应回队: ' + JSON.stringify(s && s.status));
+          queue.cancel(probe.id);
+          if (!queue.snapshot().find(x => x.id === probe.id && x.status === 'canceled')) throw new Error('回队后应可取消清理');
+        });
+        // ② 文稿全文检索：造探针文稿 → reindex → 中文 2-gram 命中 + 原型键 token（DGO6-01 回归）不崩
+        await dgo6Check('text-search', () => {
+          const dir = path.join(app.getPath('userData'), 'dgo6-probe');
+          const media = path.join(dir, 'bilibili', 'autotestUP', 'autotest视频 [BVdgo6].mp4');
+          fs.mkdirSync(path.dirname(media), { recursive: true });
+          fs.writeFileSync(media, 'x');
+          fs.writeFileSync(media.replace(/\.mp4$/, '.txt'), 'DGO 自动测试文稿：量子计算与 constructor 方法入门。');
+          const r = textindex.reindex([{ path: media, title: path.basename(media), up: 'autotestUP' }]);
+          if (r.indexed !== 1) throw new Error('reindex 应收录 1 篇: ' + JSON.stringify(r));
+          const hits = textindex.search('量子计算');
+          if (hits.length !== 1 || !String(hits[0].snippet || '').includes('量子')) throw new Error('中文 2-gram 检索失败');
+          if (textindex.search('constructor').length !== 1) throw new Error('原型键 token 检索失败（DGO6-01 回归）');
+          fs.rmSync(dir, { recursive: true, force: true });
+          textindex.reindex([]);   // 摘除探针文稿，不留脏索引
+        });
+        // ③ 字幕翻译（假翻译器直调，不走 ai.ready/网络）：双语产物含原文+译文
+        await dgo6Check('srt-translate', async () => {
+          const dir = path.join(app.getPath('userData'), 'dgo6-probe');
+          fs.mkdirSync(dir, { recursive: true });
+          const src = path.join(dir, 'autotest.srt');
+          fs.writeFileSync(src, '1\n00:00:01,000 --> 00:00:02,000\nhello autotest\n\n2\n00:00:03,000 --> 00:00:04,000\nsecond line\n');
+          const fake = async prompt => prompt.split('\n')
+            .map(l => { const m = /^(\d+)\|(.+)$/.exec(l); return m ? m[1] + '|译' + m[1] : ''; })
+            .filter(Boolean).join('\n');
+          const r = await srtLib.translateSrt(src, { translator: fake });
+          const out = fs.readFileSync(r.outFile, 'utf-8');
+          if (!out.includes('hello autotest') || !out.includes('译1') || !out.includes('译2')) throw new Error('双语产物缺失原文/译文');
+          fs.rmSync(src, { force: true }); fs.rmSync(r.outFile, { force: true });
+        });
+        // ④ 迁移包 collect+apply 对象直调（绕 dialog）：自环导入应全部去重跳过、无 errors；畸形包逐条 errors 不中断（DGO6-04 回归）
+        await dgo6Check('bundle-roundtrip', async () => {
+          const udd = app.getPath('userData');
+          const sf = path.join(udd, 'settings.json');
+          if (!fs.existsSync(sf)) fs.writeFileSync(sf, '{}');   // 自测 userData 是全新临时目录，自给自足保证文件存在（subs.json 缺失 collect 自带容忍）
+          const c = backup.collect({ settingsFile: sf, subsFile: path.join(udd, 'subs.json') });
+          if (!c.ok || c.bundle.app !== 'DGO' || !c.bundle._warning) throw new Error('collect 失败或缺 _warning');
+          const beforeUrls = subs.list().map(su => su.url);
+          const a = await backup.apply(JSON.parse(JSON.stringify(c.bundle)), {
+            settingsSetter: p => {
+              const keep = { ...p }; delete keep.outDir;   // 不动正在用的下载目录
+              settings.set(keep);
+              if (keep.minFreeMB !== undefined) configure({ minFreeMB: keep.minFreeMB });   // 模块级 configure（实例无 reconfigure）
+            },
+            subsAdd: (url, name, extra) => { const r2 = subs.add(url, name); if (r2.ok && extra) subs.update(r2.sub.id, extra); return r2; },
+            subsUrls: beforeUrls,
+          });
+          if (!a.ok) throw new Error('apply 自环失败: ' + (a.reason || ''));
+          if (a.subsAdded !== 0 || a.subsSkipped !== beforeUrls.length)
+            throw new Error(`订阅应全部去重跳过: +${a.subsAdded}/skip=${a.subsSkipped}（期望 skip=${beforeUrls.length}）`);
+          if (a.errors.length) throw new Error('apply 不应有 errors: ' + a.errors.join(' | '));
+          const bad = await backup.apply({ app: 'DGO', bundleVersion: 1, settings: {}, subs: [null, 42] },
+            { settingsSetter: () => {}, subsAdd: () => ({ ok: true }), subsUrls: [] });
+          if (!bad.ok || bad.errors.length < 2) throw new Error('畸形包应逐条记 errors 不中断（DGO6-04 回归）: ' + JSON.stringify(bad));
+        });
+        if (dgo6Fail) { pass = false; console.log('[autotest] dgo6 summary: FAIL (' + dgo6Fail + ')'); }
+        else console.log('[autotest] dgo6 summary: 4/4 OK');
 
         // RSS 通路验证：订阅影视飓风 → 探针拉动态列表（投稿+图文）
         // 本测试机 IP 可能处于风控冷却期（空列表），断言分两级：
