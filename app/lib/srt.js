@@ -3,22 +3,43 @@
 const fs = require('fs');
 
 // 解析 SRT → [{ idx, time, text }]；time 是原始时间轴行（原样保留，绝不改时间轴）
+// 数字行可能是「下一块序号」也可能是正文（如"第 42 条"）：待定 + 前瞻下一行是否时间轴再定
 function parseSrt(text) {
   const blocks = [];
-  let cur = null;
-  for (const raw of String(text).replace(/\r\n/g, '\n').split('\n')) {
-    const line = raw.trimEnd();
-    if (/^\d+$/.test(line.trim()) && !cur) { cur = { idx: parseInt(line.trim(), 10), time: '', text: [] }; continue; }
-    if (cur && !cur.time && line.includes('-->')) { cur.time = line.trim(); continue; }
+  let cur = null, pending = null; // pending: 已读到的纯数字行（尚未定性）
+  const flushCur = () => { if (cur && cur.text.length) blocks.push(cur); cur = null; };
+  const pushPending = () => { if (pending !== null && cur) { cur.text.push(String(pending)); pending = null; } };
+  const lines = String(text).replace(/^\uFEFF/, '').replace(/\r\n/g, '\n').split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trimEnd();
+    const t = line.trim();
+    const isNum = /^\d+$/.test(t);
+    if (!cur && isNum) { cur = { idx: parseInt(t, 10), time: '', text: [] }; continue; }
+    if (cur && !cur.time && line.includes('-->')) { cur.time = t; continue; }
     if (cur) {
-      if (line.trim() === '') {
-        if (cur.text.length) { blocks.push(cur); cur = null; }
+      if (t === '') {
+        pushPending();
+        flushCur();
         continue;
       }
+      if (isNum && cur.time) {
+        const next = (lines[i + 1] || '').trim();
+        if (next.includes('-->')) {   // 序号 + 时间轴 = 新块开始（前块无文本也照常丢弃）
+          pushPending();
+          flushCur();
+          cur = { idx: parseInt(t, 10), time: '', text: [] };
+          continue;
+        }
+        pushPending();
+        pending = parseInt(t, 10);    // 待定：先当可能的正文存着
+        continue;
+      }
+      pushPending();
       cur.text.push(line);
     }
   }
-  if (cur && cur.text.length) blocks.push(cur);   // 无结尾空行也收
+  pushPending();
+  flushCur();   // 无结尾空行也收
   return blocks;
 }
 
