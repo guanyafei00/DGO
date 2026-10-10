@@ -35,6 +35,8 @@ const updateSign = require('./lib/update_sign');
 const log = require('./lib/log');
 const source = require('./lib/source');
 const srtLib = require('./lib/srt');
+const backup = require('./lib/backup');
+const textindex = require('./lib/textindex');
 
 const CHECK_INTERVAL_MS = 10 * 60 * 1000;   // 每站 10 分钟增量检查
 const RULES_INTERVAL_MS = 6 * 3600 * 1000;  // 远程风控规则 6 小时拉一轮
@@ -282,7 +284,7 @@ app.whenReady().then(() => {
     try { fs.copyFileSync(legacyCookie, cookiePath); } catch (e) {}
   }
 
-  configure({ binDir: binDir(), cookiePath, outDir, proxy: settings.get().proxy });
+  configure({ binDir: binDir(), cookiePath, outDir, proxy: settings.get().proxy, minFreeMB: settings.get().minFreeMB });
   identify.setBinDir(binDir());
   identify.setCookiePath(cookiePath);   // 会审 P1：登录后识别探针也带 cookie（原先断链，登录对识别无效）
   identify.setProxy(settings.get().proxy);
@@ -293,6 +295,7 @@ app.whenReady().then(() => {
   store.configure({ userData });
   subs.configure({ binDir: binDir(), cookiePath, file: path.join(userData, 'subs.json') });
   library.configure({ outDir, sourceGet: p => source.get(p) });
+  textindex.configure({ file: path.join(userData, 'text-index.json') });   // #70③：文稿全文检索索引
   asr.configure({
     binDir: binDir(), modelsDir: path.join(userData, 'asr-models'),
     onPersist: patch => settings.set(patch)   // 默认模型持久化到 settings.json
@@ -309,6 +312,10 @@ app.whenReady().then(() => {
     })).then(r => {
       if (win && !win.isDestroyed()) win.webContents.send('asr:done', { filePath: mediaPath, ...r });
       if (win && !win.isDestroyed()) win.webContents.send('library:changed');
+      try {   // #70③：新文稿进全文索引
+        const up = (mediaPath.split(/[\\/]/).slice(-2, -1)[0]) || '';
+        textindex.reindex([{ path: mediaPath, title: path.basename(mediaPath), up }]);
+      } catch (e) {}
       if ((!win.isVisible() || win.isMinimized()) && Notification.isSupported()) {
         const n = new Notification({ title: '转写完成 ✓', body: path.basename(mediaPath), silent: false });
         n.on('click', () => { if (win) { win.show(); win.focus(); } });
@@ -607,6 +614,75 @@ app.whenReady().then(() => {
     settings.set({ notifyDone: on !== false, notifyMode: mode === 'batch' ? 'batch' : 'each' });
     return { ok: true };
   });
+  // #70① 磁盘挂起阈值设置（0=关闭检测）
+  ipcMain.handle('settings:setMinFree', (e, { mb }) => {
+    const mbN = Math.max(0, Math.floor(Number(mb) || 0));
+    settings.set({ minFreeMB: mbN });
+    queue.reconfigure({ minFreeMB: mbN });
+    return { ok: true, minFreeMB: mbN };
+  });
+  // #70① 数据安全包：导出（用户选路径存 JSON）/ 导入（选文件 → 设置覆盖合并 + 订阅按 URL 合并）
+  ipcMain.handle('settings:export', async () => {
+    try {
+      const r = await dialog.showSaveDialog(win, {
+        title: '导出 DGO 迁移包',
+        defaultPath: 'DGO-迁移包-' + new Date().toISOString().slice(0, 10) + '.json',
+        filters: [{ name: 'DGO 迁移包', extensions: ['json'] }],
+      });
+      if (r.canceled || !r.filePath) return { ok: false, reason: '已取消' };
+      const bundle = backup.collect({ settingsFile: path.join(app.getPath('userData'), 'settings.json'), subsFile: path.join(app.getPath('userData'), 'subs.json') });
+      if (!bundle.ok) return bundle;
+      fs.writeFileSync(r.filePath, JSON.stringify(bundle.bundle, null, 2), 'utf-8');
+      log.info('backup', `导出迁移包 → ${r.filePath}（${bundle.counts.subs} 个订阅）`);
+      return { ok: true, file: r.filePath, counts: bundle.counts };
+    } catch (e) { return { ok: false, reason: e.message }; }
+  });
+  ipcMain.handle('settings:import', async () => {
+    try {
+      const r = await dialog.showOpenDialog(win, {
+        title: '导入 DGO 迁移包', properties: ['openFile'],
+        filters: [{ name: 'DGO 迁移包', extensions: ['json'] }],
+      });
+      if (r.canceled || !r.filePaths || !r.filePaths[0]) return { ok: false, reason: '已取消' };
+      const bundle = JSON.parse(fs.readFileSync(r.filePaths[0], 'utf-8'));
+      const out = await backup.apply(bundle, {
+        settingsSetter: patch => {
+          settings.set(patch);
+          if (patch.aiUrl !== undefined || patch.aiKey !== undefined || patch.aiModel !== undefined) {
+            const c = settings.get(); ai.configure({ url: c.aiUrl, key: c.aiKey, model: c.aiModel });
+          }
+          if (patch.minFreeMB !== undefined) queue.reconfigure({ minFreeMB: patch.minFreeMB });
+        },
+        subsAdd: (url, name) => { const a = subs.add(url, name); if (a.ok) checkAllSubs(a.sub.id).catch(() => {}); return a; },
+        subsUrls: subs.list().map(s => s.url),
+      });
+      if (out.ok) log.info('backup', `导入迁移包：设置 ${out.settingsApplied} 项，订阅 +${out.subsAdded}（跳过 ${out.subsSkipped}）`);
+      return out;
+    } catch (e) { return { ok: false, reason: '导入失败: ' + e.message }; }
+  });
+  // #70③ 文稿全文搜索
+  ipcMain.handle('text:search', (e, { q, limit }) => ({ ok: true, results: textindex.search(q, limit || 30), stats: textindex.stats() }));
+  // #70④ 组级 AI 摘要：收集组内转写文稿（cap 20 篇 × 8k 字）→ AI 结构化总结 → 存组目录 AI摘要-日期.md
+  ipcMain.handle('lib:summarize', async (e, { key }) => {
+    if (!ai.ready()) return { ok: false, reason: '请先在设置页配置 AI 接口（地址 / Key / 模型）' };
+    const g = (await library.scan()).groups.find(x => x.key === key);
+    if (!g) return { ok: false, reason: '分组不存在' };
+    const txts = [];
+    for (const f of g.files) {
+      const t = f.path.replace(/\.[^.\\/]+$/, '') + '.txt';
+      if (!fs.existsSync(t)) continue;
+      try { txts.push({ name: f.name, text: fs.readFileSync(t, 'utf-8').slice(0, 8000) }); } catch (e2) {}
+      if (txts.length >= 20) break;   // 防超长+费用失控
+    }
+    if (!txts.length) return { ok: false, reason: '该组还没有转写文稿——先点「📝 全组转写」' };
+    const content = txts.map(t => `## ${t.name.replace(/\.[^.]+$/, '')}\n${t.text}`).join('\n\n');
+    const md = await ai.run('groupSummary', content);
+    const outFile = path.join(path.dirname(g.files[0].path), `AI摘要-${new Date().toISOString().slice(0, 10)}.md`);
+    fs.writeFileSync(outFile, md, 'utf-8');
+    log.info('ai', `组级摘要完成 ${g.uploader}（${txts.length} 篇）→ ${outFile}`);
+    if (win && !win.isDestroyed()) win.webContents.send('library:changed');
+    return { ok: true, out: outFile, md, docs: txts.length };
+  });
   // 启动 30 秒后自动检查软件更新（可在 settings.json 关：appAutoUpdate=false）
   setTimeout(async () => {
     if (settings.get().appAutoUpdate === false) return;
@@ -722,7 +798,17 @@ app.whenReady().then(() => {
   });
 
   // ===== 媒体库（只读索引，永不删除文件）=====
-  ipcMain.handle('library:scan', () => library.scan());
+  ipcMain.handle('library:scan', async () => {
+    const r = await library.scan();
+    // #70③：顺带增量重建文稿索引（扫描结果里全是媒体文件，文稿=同名 .txt；mtime 没变的跳过）
+    try {
+      const entries = [];
+      for (const g of r.groups) for (const f of g.files) entries.push({ path: f.path, title: f.name, up: g.uploader });
+      const s = textindex.reindex(entries);
+      if (s.indexed) log.info('textindex', `文稿索引更新 ${s.indexed} 篇（共 ${textindex.stats().docs} 篇）`);
+    } catch (e) { log.warn('textindex', '索引更新失败: ' + e.message); }
+    return r;
+  });
   // 路径必须落在下载目录内（会审 P1：startsWith 前缀匹配可被 downloads-evil 同前缀路径绕过，改 path.relative）
   // 目录本身也放行（rel === ''）：订阅卡片的「打开下载文件夹」用
   function insideOutDir(p) {
@@ -807,7 +893,11 @@ app.whenReady().then(() => {
       for (const sub of subs.list()) {
         if (onlyId && sub.id !== onlyId) continue;
         const real = subs.get(sub.id);
+        if (real.userPaused) { results.push({ id: sub.id, ok: false, reason: '已暂停（手动）' }); continue; }   // #70②
         if (real.paused) { results.push({ id: sub.id, ok: false, reason: '已暂停（连续失败）' }); continue; }
+        // #70② 频率档位：订阅可设更长间隔（10/30/60 分钟）；手动单查（onlyId）不受限
+        if (!onlyId && real.intervalMin > CHECK_INTERVAL_MS / 60000 &&
+            Date.now() - (real.lastCheck || 0) < real.intervalMin * 60 * 1000) continue;
         try {
           const gdlSeqs = [];   // gallery-dl 型订阅：新内容只有序号没有独立 URL，先收集再合并连续段
           const r = await subs.checkSub(real, (s, it) => {
@@ -815,7 +905,8 @@ app.whenReady().then(() => {
             if (!kwMatch(real, it.text)) return;   // 关键词不匹配：记 known 但不入队
             if (it.type === 'gdl') { gdlSeqs.push(it.seq); return; }
             const engine = it.type === 'video' ? 'yt-dlp' : 'gallery-dl';
-            const t = queue.add(subs.itemUrl(s, it), { engine, title: `[订阅] ${s.name} · ${it.text || it.type}`, _subId: s.id });
+            // #70④：订阅开启「自动转写」→ 新任务带转写标记（下载完自动出字幕/文稿）
+            const t = queue.add(subs.itemUrl(s, it), { engine, title: `[订阅] ${s.name} · ${it.text || it.type}`, _subId: s.id, _transcribe: !!real.autoTranscribe });
             if (t && t.duplicate) return false;   // 会审 B1：同 URL 任务已在队列（可能失败/被取消）→ 不记 known，下轮仍算 fresh 重查，防增量被永久吞掉
             return true;
           });
@@ -829,7 +920,7 @@ app.whenReady().then(() => {
             }
             for (const [a, b] of runs) {
               queue.add(real.url, { engine: 'gallery-dl', _range: a === b ? String(a) : `${a}-${b}`,
-                title: `[订阅] ${real.name} · 新内容 #${a}${b !== a ? '-' + b : ''}`, _subId: real.id });
+                title: `[订阅] ${real.name} · 新内容 #${a}${b !== a ? '-' + b : ''}`, _subId: real.id, _transcribe: !!real.autoTranscribe });
             }
           }
           real.failStreak = 0;
@@ -872,6 +963,12 @@ app.whenReady().then(() => {
   });
   ipcMain.handle('subs:remove', (e, { id }) => subs.remove(id));
   ipcMain.handle('subs:check', (e, { id }) => checkAllSubs(id || null));
+  // #70② 订阅属性：暂停/分组/频率/自动转写（白名单见 subs.update）
+  ipcMain.handle('subs:update', (e, { id, patch }) => {
+    const r = subs.update(id, patch);
+    if (win && !win.isDestroyed()) win.webContents.send('subs:changed', subs.list());
+    return r;
+  });
   // 订阅卡片 📂：打开该订阅实际的下载子目录。
   // yt-dlp 结构 {outDir}/{site}/{uploader}；gallery-dl 结构 {outDir}/{category}/{作者目录}（x→twitter/xxx、weibo→weibo/xxx…）
   const GDL_CATEGORY = [
@@ -922,10 +1019,10 @@ app.whenReady().then(() => {
     }
     return { ok: true, files: map };
   });
-  ipcMain.handle('subs:resume', (e, { id }) => {   // 会审 P1：暂停的订阅可恢复
+  ipcMain.handle('subs:resume', (e, { id }) => {   // 会审 P1：暂停的订阅可恢复（#70② 起同时清手动/自动两种暂停）
     const r = subs.get(id);
     if (!r) return { ok: false, reason: '订阅不存在' };
-    r.paused = false; r.failStreak = 0;
+    r.paused = false; r.failStreak = 0; r.userPaused = false;
     subs.save();
     if (win && !win.isDestroyed()) win.webContents.send('subs:changed', subs.list());
     return { ok: true };

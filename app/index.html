@@ -153,7 +153,7 @@
       <button class="btn-dl" onclick="addSub()">＋ 添加订阅</button>
     </div>
     <div class="hint">每 10 分钟自动增量检查（轻量单次请求，不触发风控）· 添加后会询问是否回溯全部历史 · 新内容自动入队 · <b>UP 主删除源视频不会删除你已下载的文件</b></div>
-    <div class="sec-t">📡 我的订阅 <span class="cnt" id="s-cnt2">0</span> <span class="act" style="cursor:pointer;font-size:11px;margin-left:auto" onclick="checkAllSubs()">⟳ 立即检查</span></div>
+    <div class="sec-t">📡 我的订阅 <span class="cnt" id="s-cnt2">0</span> <select id="groupFilter" onchange="renderSubs()" style="margin-left:auto;font:inherit;font-size:11px;background:var(--panel2);color:var(--txt);border:1px solid var(--line,#ddd);border-radius:6px;padding:2px 6px;outline:none"><option value="">全部分组</option></select> <span class="act" style="cursor:pointer;font-size:11px" onclick="checkAllSubs()">⟳ 立即检查</span></div>
     <div id="subList"><div class="empty">还没有订阅——支持 B站UP主 / YouTube频道 / X用户 / Pixiv / 微博 / Reddit / Instagram / Danbooru 等站点主页</div></div>
   </div>
 
@@ -240,6 +240,27 @@
         </select>
       </div>
       <div class="desc" style="margin:12px 0 0">· 关闭窗口 = 最小化到系统托盘，订阅检查与下载<b>继续运行</b><br>· 托盘图标右键可「显示」或「退出」；双击托盘图标回到主窗口<br>· 已防重复启动：再次双击桌面图标会唤出主窗口</div>
+    </div>
+
+    <div class="card">
+      <h3>💾 数据安全 <span class="rec">换机搬家</span></h3>
+      <div class="row">
+        <label>磁盘保护</label>
+        <div style="display:flex;align-items:center;gap:8px;flex:1;max-width:320px">
+          <input id="minFreeInput" type="number" min="0" step="100" style="flex:1;padding:8px 11px;border:1px solid var(--line,#ddd);border-radius:9px;font:inherit;background:transparent;color:var(--txt)">
+          <span class="note" style="white-space:nowrap">MB 剩余空间</span>
+        </div>
+        <button class="btn-mini" style="color:var(--acc2)" onclick="saveMinFree()">💾 保存</button>
+      </div>
+      <div class="note" style="margin:6px 0 12px">下载目录所在盘剩余空间低于该值时任务自动暂停（清理空间后自动续跑）；设为 0 关闭检测</div>
+      <div class="row" style="margin-bottom:0">
+        <label>迁移包</label>
+        <div style="display:flex;gap:8px;flex:1">
+          <button class="btn-mini" style="color:var(--acc2)" onclick="doExport()">📤 导出</button>
+          <button class="btn-mini" style="color:var(--acc2)" onclick="doImport()">📥 导入</button>
+        </div>
+      </div>
+      <div class="note" style="margin:6px 0 0">导出 = 一份 JSON 文件（含全部设置 + 订阅清单及跟踪进度 + AI 配置）；导入 = 设置覆盖恢复、订阅按链接合并不重复。不含 Cookie（换机请重新登录）与媒体文件本体（拷下载目录即可）</div>
     </div>
 
     <div class="card">
@@ -608,9 +629,26 @@ async function loadSettings() {
   $('updateUrlInput').value = s.updateUrl || '';
   $('notifyChk').checked = s.notifyDone !== false;
   $('notifyModeSel').value = s.notifyMode === 'batch' ? 'batch' : 'each';
+  $('minFreeInput').value = s.minFreeMB !== undefined ? s.minFreeMB : 1000;
   loadAiConfig();
   $('engineAutoChk').checked = s.engineAutoUpdate !== false;
   $('appVer').textContent = '当前 ' + await window.fetchie.appVersion();
+}
+// #70① 数据安全包
+async function saveMinFree() {
+  const r = await window.fetchie.settingsSetMinFree(Number($('minFreeInput').value) || 0);
+  toast(r.minFreeMB === 0 ? '磁盘保护已关闭' : `磁盘保护已设为 ${r.minFreeMB} MB ✓`);
+}
+async function doExport() {
+  const r = await window.fetchie.settingsExport();
+  if (!r.ok) { if (r.reason !== '已取消') toast('导出失败：' + r.reason); return; }
+  toast(`迁移包已导出 ✓（${r.counts.subs} 个订阅，${r.counts.settings} 项设置）`);
+}
+async function doImport() {
+  const r = await window.fetchie.settingsImport();
+  if (!r.ok) { if (r.reason !== '已取消') toast('导入失败：' + (r.reason || '')); return; }
+  toast(`导入完成 ✓ 设置 ${r.settingsApplied} 项 · 订阅 +${r.subsAdded}${r.subsSkipped ? `（跳过已有 ${r.subsSkipped}）` : ''}${r.errors && r.errors.length ? ` · ${r.errors.length} 条失败` : ''}`);
+  loadSettings();
 }
 async function saveUpdateUrl() {
   await window.fetchie.setUpdateUrl($('updateUrlInput').value.trim());
@@ -715,31 +753,89 @@ let subsItems = [];
 let _goneFilesMap = {};   // subId -> { goneId: [本地文件路径...] }
 async function loadSubs() {
   subsItems = await window.fetchie.subsList();
+  // #70② 分组过滤下拉：同步分组清单
+  const sel = $('groupFilter');
+  if (sel) {
+    const cur = sel.value;
+    const groups = [...new Set(subsItems.map(s => (s.group || '').trim()).filter(Boolean))];
+    sel.innerHTML = '<option value="">全部分组</option><option value="::none">未分组</option>' +
+      groups.map(g => `<option value="${escAttr(g)}">${esc(g)}</option>`).join('');
+    sel.value = groups.includes(cur) || ['::none', ''].includes(cur) ? cur : '';
+  }
+  renderSubs();
+}
+async function renderSubs() {
   const el = $('subList');
-  $('s-cnt').textContent = subsItems.length;
-  $('s-cnt2').textContent = subsItems.length;
+  const sel = $('groupFilter');
+  const gf = sel ? sel.value : '';
+  let items = subsItems;
+  if (gf === '::none') items = items.filter(s => !(s.group || '').trim());
+  else if (gf) items = items.filter(s => (s.group || '').trim() === gf);
+  $('s-cnt2').textContent = items.length;
   const htmls = [];
-  for (const s of subsItems) {
+  for (const s of items) {
     const ago = s.lastCheck ? Math.round((Date.now() - s.lastCheck) / 60000) : null;
     if (s.sourceDeleted) {
       try { const r = await window.fetchie.subsGoneFiles(s.id); _goneFilesMap[s.id] = (r && r.files) || {}; } catch (e) {}
     }
+    const paused = s.userPaused || s.paused;
+    const pausedTag = s.userPaused ? '<span style="color:var(--txt2);font-size:11px">（⏸ 已暂停）</span>'
+      : s.paused ? '<span style="color:var(--red);font-size:11px">（已暂停：连续检查失败）</span>' : '';
+    const groupTag = (s.group || '').trim() ? ` <span style="font-size:10px;color:var(--acc2);background:var(--panel2);border-radius:5px;padding:1px 6px">${esc(s.group)}</span>` : '';
+    const freqTag = s.intervalMin ? ` · 检查频率 ${s.intervalMin} 分钟` : '';
+    const atTag = s.autoTranscribe ? ' · <span style="color:var(--green)">📝 自动转写</span>' : '';
     htmls.push(`
-    <div class="task">
+    <div class="task"${paused ? ' style="opacity:.62"' : ''}>
       <div class="t-thumb">📡<span class="eng">${s.kind === 'bilibili' ? 'B站' : s.kind === 'x' ? 'X' : s.kind === 'youtube' ? 'YouTube' : s.kind === 'gdl' ? '图站' : '订阅'}</span></div>
       <div class="t-info">
-        <div class="name">${esc(s.name)} ${s.paused ? '<span style="color:var(--red);font-size:11px">（已暂停：连续检查失败）</span>' : ''}</div>
-        <div class="meta">${ago === null ? '尚未检查' : ago + ' 分钟前检查过'} · 已跟踪 ${s.knownCount} 条${s.lastNew ? ` · 上轮新增 ${s.lastNew}` : ''}${s.autoBackfill ? ' · <span style="color:var(--green)">⤓ 自动全量下载中</span>' : ''}${s.kw && s.kw.length ? ' · 🏷 ' + esc(s.kw.join('/')) : ''}${goneBadge(s)}</div>
+        <div class="name">${esc(s.name)}${groupTag} ${pausedTag}</div>
+        <div class="meta">${ago === null ? '尚未检查' : ago + ' 分钟前检查过'} · 已跟踪 ${s.knownCount} 条${s.lastNew ? ` · 上轮新增 ${s.lastNew}` : ''}${s.autoBackfill ? ' · <span style="color:var(--green)">⤓ 自动全量下载中</span>' : ''}${s.kw && s.kw.length ? ' · 🏷 ' + esc(s.kw.join('/')) : ''}${freqTag}${atTag}${goneBadge(s)}</div>
       </div>
       <div class="x" onclick="checkSub('${s.id}')" title="立即检查">⟳</div>
       <div class="x" onclick="backfillSub('${s.id}')" title="把 TA 已发布的内容全部加入下载队列">⤓</div>
       <div class="x" onclick="openSubFolder('${s.id}')" title="打开下载文件夹">📂</div>
       <div class="x" onclick="editKw('${s.id}')" title="关键词过滤：只自动下载含关键词的内容">🏷</div>
-      ${s.paused ? `<div class="x" onclick="resumeSub('${s.id}')" title="恢复检查" style="color:var(--green)">▶</div>` : ''}
+      <div class="x" onclick="editSubOpts('${s.id}')" title="订阅设置：暂停/分组/检查频率/自动转写">⚙</div>
+      ${s.userPaused ? `<div class="x" onclick="resumeSub('${s.id}')" title="恢复检查" style="color:var(--green)">▶</div>`
+        : s.paused ? `<div class="x" onclick="resumeSub('${s.id}')" title="恢复检查（连续失败已自动暂停）" style="color:var(--green)">▶</div>` : ''}
       <div class="x" onclick="removeSub('${s.id}')" title="取消订阅">✕</div>
     </div>`);
   }
-  el.innerHTML = htmls.length ? htmls.join('') : `<div class="empty">还没有订阅——支持 B站UP主 / YouTube频道 / X用户 / Pixiv / 微博 / Reddit / Instagram / Danbooru 等站点主页</div>`;
+  el.innerHTML = htmls.length ? htmls.join('') : (subsItems.length ? `<div class="empty">该分组下暂无订阅</div>` : `<div class="empty">还没有订阅——支持 B站UP主 / YouTube频道 / X用户 / Pixiv / 微博 / Reddit / Instagram / Danbooru 等站点主页</div>`);
+}
+
+// #70② 订阅设置模态：暂停 / 分组 / 检查频率 / 自动转写
+function editSubOpts(id) {
+  const s = subsItems.find(x => x.id === id); if (!s) return;
+  openModal('⚙ 订阅设置 · ' + s.name, `
+    <div style="display:flex;flex-direction:column;gap:12px;font-size:13px">
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer"><input type="checkbox" id="soPaused" ${s.userPaused ? 'checked' : ''}> ⏸ 暂停此订阅（不自动检查、不自动下载，已下载文件保留）</label>
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer"><input type="checkbox" id="soTranscribe" ${s.autoTranscribe ? 'checked' : ''}> 📝 新下载自动转写（下载完成即后台转写出字幕和文稿）</label>
+      <div>
+        <div style="font-size:12.5px;color:var(--txt2,#888);margin-bottom:5px">分组（留空 = 未分组，最多 20 字）</div>
+        <input id="soGroup" value="${escAttr(s.group || '')}" placeholder="如：追更 / 学习 / 保存" style="width:100%;box-sizing:border-box;padding:8px 11px;border:1px solid var(--line,#ddd);border-radius:9px;font:inherit;background:transparent;color:var(--txt,#222)">
+      </div>
+      <div>
+        <div style="font-size:12.5px;color:var(--txt2,#888);margin-bottom:5px">检查频率（间隔越长越省请求，防风控更稳）</div>
+        <select id="soInterval" style="width:100%;padding:8px 11px;font:inherit;background:var(--panel2);color:var(--txt);border:1px solid var(--line,#ddd);border-radius:9px;outline:none">
+          <option value="0" ${!s.intervalMin ? 'selected' : ''}>跟随全局（10 分钟）</option>
+          <option value="10" ${s.intervalMin === 10 ? 'selected' : ''}>每 10 分钟</option>
+          <option value="30" ${s.intervalMin === 30 ? 'selected' : ''}>每 30 分钟</option>
+          <option value="60" ${s.intervalMin === 60 ? 'selected' : ''}>每 60 分钟</option>
+        </select>
+      </div>
+    </div>
+    <div style="text-align:right;margin-top:14px"><button class="btn-mini" style="color:var(--acc2)" onclick="saveSubOpts('${id}')">💾 保存</button></div>`);
+}
+async function saveSubOpts(id) {
+  const r = await window.fetchie.subsUpdate(id, {
+    userPaused: $('soPaused').checked,
+    autoTranscribe: $('soTranscribe').checked,
+    group: $('soGroup').value,
+    intervalMin: Number($('soInterval').value),
+  });
+  if (!r.ok) return toast(r.reason || '保存失败');
+  closeModal(); toast('订阅设置已保存 ✓'); loadSubs();
 }
 
 // 删帖回链：B站 opus/视频、YouTube 视频、X 推文（从文件名前缀提推文 id，尽力而为）、gdl 型退订阅主页
@@ -891,20 +987,33 @@ async function loadLibrary(force) {
 }
 
 let libKw = '';
+let _txtHits = {};   // #70③ 文稿全文检索结果：path → {snippet}（随搜索词防抖更新）
+let _txtSearchTimer = null;
 function setLibKw(v) {
   libKw = String(v || '').trim();
   $('libKwClear').style.display = libKw ? 'inline' : 'none';
+  clearTimeout(_txtSearchTimer);
+  if (!libKw) { _txtHits = {}; renderLibrary(); return; }
+  // 标题过滤立即反馈；文稿内容检索防抖 400ms（避免每敲一键扫索引）
   renderLibrary();
+  _txtSearchTimer = setTimeout(async () => {
+    try {
+      const r = await window.fetchie.textSearch(libKw, 50);
+      _txtHits = {};
+      for (const it of (r.results || [])) _txtHits[it.path] = it;
+      renderLibrary();
+    } catch (e) {}
+  }, 400);
 }
 
 function renderLibrary() {
   const el = $('libList');
   if (!libData) return;
   const kw = libKw.toLowerCase();
-  // 关键词过滤：UP主 / 站点 / 任一文件名命中即保留该组
+  // 关键词过滤：UP主 / 站点 / 任一文件名命中 / 文稿内容命中（#70③）即保留该组
   const groups = kw ? libData.groups.filter(g =>
     g.uploader.toLowerCase().includes(kw) || g.site.toLowerCase().includes(kw) ||
-    g.files.some(f => f.name.toLowerCase().includes(kw))) : libData.groups;
+    g.files.some(f => f.name.toLowerCase().includes(kw)) || g.files.some(f => _txtHits[f.path])) : libData.groups;
   $('l-cnt').textContent = kw ? `${groups.length}/${libData.groups.length}` : libData.groups.length;
   $('l-sum').textContent = `${libData.totalFiles} 个文件 · ${fmtBytes(libData.totalSize)}`;
   if (!libData.groups.length) {
@@ -921,7 +1030,8 @@ function renderLibrary() {
   el.innerHTML = bigNote + groups.map(g => {
     const open = g.key === expandedKey;
     const matched = kw ? g.files.filter(f => f.name.toLowerCase().includes(kw)).length : 0;
-    const kwNote = kw && matched ? ` · <span style="color:var(--acc)">命中 ${matched} 个文件</span>` : '';
+    const txtMatched = kw ? g.files.filter(f => _txtHits[f.path]).length : 0;
+    const kwNote = (kw && (matched || txtMatched)) ? ` · <span style="color:var(--acc)">命中 ${matched ? matched + ' 个文件' : ''}${matched && txtMatched ? ' + ' : ''}${txtMatched ? txtMatched + ' 篇文稿' : ''}</span>` : '';
     return `
     <div class="task" style="cursor:pointer;${open ? 'border-color:var(--acc);background:var(--accbg)' : ''}" onclick="toggleGroup('${escAttr(g.key)}')">
       <div class="t-thumb" style="font-size:22px">${siteIcon(g.site)}</div>
@@ -931,12 +1041,12 @@ function renderLibrary() {
       </div>
       <div class="x" onclick="event.stopPropagation();openPath('${escAttr(g.files[0] ? g.files[0].path : g.key)}')" title="打开文件夹">📁</div>
       <div class="st ${open ? 'downloading' : 'queued'}">${open ? '收起 ▲' : '展开 ▼'}</div>
-    </div>${open ? (g.files.length > 200 ? `<div class="hint" style="margin:0 0 6px 44px">该组共 ${g.files.length} 个文件，仅展示最近的 200 个（按发布时间排序）</div>` : '') + `<div style="margin:0 0 6px 44px">${g.files.some(f => /\.(mp4|mkv|webm|mov|avi|flv|m4a|mp3|wav)$/i.test(f.name)) ? `<span class="btn-mini" style="color:var(--acc2)" onclick="transcribeGroup('${escAttr(g.key)}')" title="把组内还没有字幕的音视频全部排队转写（串行处理）">📝 全组转写</span>` : ''}</div>` + g.files.slice(0, 200).map(f => `
+    </div>${open ? (g.files.length > 200 ? `<div class="hint" style="margin:0 0 6px 44px">该组共 ${g.files.length} 个文件，仅展示最近的 200 个（按发布时间排序）</div>` : '') + `<div style="margin:0 0 6px 44px;display:flex;gap:8px">${g.files.some(f => /\.(mp4|mkv|webm|mov|avi|flv|m4a|mp3|wav)$/i.test(f.name)) ? `<span class="btn-mini" style="color:var(--acc2)" onclick="transcribeGroup('${escAttr(g.key)}')" title="把组内还没有字幕的音视频全部排队转写（串行处理）">📝 全组转写</span>` : ''}<span class="btn-mini" style="color:var(--acc2)" onclick="summarizeGroup('${escAttr(g.key)}')" title="把组内转写文稿交给 AI 做结构化总结（需设置页配置 AI）">✨ AI 摘要</span></div>` + g.files.slice(0, 200).map(f => `
       <div class="task" style="margin:0 0 6px 44px;padding:8px 12px">
         <div class="t-thumb" style="width:36px;height:28px;font-size:14px">${kindIcon(f.kind)}</div>
         <div class="t-info">
           <div class="name" title="${esc(f.path)}">${esc(f.name)}</div>
-          <div class="meta">${f.sizeText} · ${timeAgo(f.mtime)}${asrStates[f.path] ? ' · 📝 ' + (asrStates[f.path].state === 'running' ? '转写中 ' + asrStates[f.path].pct + '%' : asrStates[f.path].state === 'done' ? '已转写' : '转写失败') : ''}${jobStatus(f)}${srcBadge(f)}</div>
+          <div class="meta">${f.sizeText} · ${timeAgo(f.mtime)}${_txtHits[f.path] ? ' · 📄 <span title="' + escAttr(_txtHits[f.path].snippet || '') + '" style="color:var(--acc)">文稿匹配</span>' : ''}${asrStates[f.path] ? ' · 📝 ' + (asrStates[f.path].state === 'running' ? '转写中 ' + asrStates[f.path].pct + '%' : asrStates[f.path].state === 'done' ? '已转写' : '转写失败') : ''}${jobStatus(f)}${srcBadge(f)}</div>
         </div>
         ${/\.(mp4|mkv|webm|mov|avi|flv|m4a|mp3|wav)$/i.test(f.name) ? `<div class="x" onclick="event.stopPropagation();transcribeFile('${escAttr(f.path)}')" title="本地转写出 SRT 字幕">📝</div><div class="x" onclick="event.stopPropagation();translateFile('${escAttr(f.path)}')" title="生成中英双语字幕（无字幕会先自动转写；需在设置页配置 AI）">🌐</div><div class="x" onclick="event.stopPropagation();burnFile('${escAttr(f.path)}')" title="把字幕硬烧进视频（生成新视频文件）">🎬</div><div class="x" onclick="event.stopPropagation();aiPanel('${escAttr(f.path)}')" title="AI 文稿助理（摘要/翻译）">✨</div>` : ''}
         <div class="x" onclick="openPath('${escAttr(f.path)}')" title="打开所在文件夹">📁</div>
@@ -971,6 +1081,24 @@ function transcribeGroup(key) {
   const paths = g.files.filter(f => /\.(mp4|mkv|webm|mov|avi|flv|m4a|mp3|wav)$/i.test(f.name)).map(f => f.path);
   if (!paths.length) return toast('该组没有可转写的音视频');
   window.fetchie.asrBatch(paths);
+}
+
+// #70④ 组级 AI 摘要：组内文稿交给 AI 做结构化总结，结果存组目录 AI摘要-日期.md
+async function summarizeGroup(key) {
+  const g = (libData.groups || []).find(x => x.key === key);
+  if (!g) return;
+  openModal('✨ AI 摘要 · ' + esc(g.uploader), `
+    <div style="font-size:12.5px;color:var(--txt2,#888);margin-bottom:10px">正在把组内转写文稿（最多 20 篇）交给 AI 做结构化总结，长内容约需一两分钟…</div>
+    <div id="gsumOut" style="white-space:pre-wrap;font-size:13px;line-height:1.7;background:rgba(127,127,127,.08);border-radius:9px;padding:12px;max-height:46vh;overflow:auto">⏳ 生成中…</div>`);
+  try {
+    const r = await window.fetchie.libSummarize(key);
+    if (!r.ok) { $('gsumOut').textContent = '失败：' + (r.reason || '未知错误'); return; }
+    $('gsumOut').textContent = r.md;
+    const div = document.createElement('div');
+    div.style.cssText = 'text-align:right;margin-top:10px;font-size:12px;color:var(--green)';
+    div.textContent = `✓ 已保存到 ${r.out}（${r.docs} 篇文稿）`;
+    $('gsumOut').after(div);
+  } catch (e) { const o = document.getElementById('gsumOut'); if (o) o.textContent = '失败：' + e.message; }
 }
 
 // 来源徽标：站点 + 单条/订阅 + 一键打开来源链接（老文件无索引记录 → 不显示，不撒谎）

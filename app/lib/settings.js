@@ -13,6 +13,9 @@ function configure({ file, defaultOutDir }) {
   // 通知设置默认值（notifyDone=开关，notifyMode=each 单项即通知 / batch 全部完成后统一通知）——坏值归一化
   if (data.notifyDone === undefined) data.notifyDone = true; else data.notifyDone = !!data.notifyDone;
   if (!['each', 'batch'].includes(data.notifyMode)) data.notifyMode = 'each';
+  // #70①：磁盘剩余空间阈值 MB（下载目录所在盘低于该值任务挂起；0=关闭检测；未设置默认 1000）
+  if (data.minFreeMB === undefined) data.minFreeMB = 1000;
+  else data.minFreeMB = Math.max(0, Math.floor(Number(data.minFreeMB) || 0));
 }
 
 function get() { return { ...data }; }
