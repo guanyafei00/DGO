@@ -151,8 +151,8 @@ class DownloadQueue {
 
   snapshot() {
     return this.order.map(id => {
-      // 保留 _range（会审修复：先前被剥离导致范围任务崩溃恢复后全量重下）
-      const { _child, _wasActive, ...rest } = this.items.get(id);
+      // 保留 _range（会审修复：先前被剥离导致范围任务崩溃恢复后全量重下）；_files 巨大且只供 onDone 钩子用，不入快照
+      const { _child, _wasActive, _files, ...rest } = this.items.get(id);
       if (rest.status === 'held') rest.heldRemainMs = strategy.breakerRemainMs(rest.url);
       return rest;
     });
@@ -200,12 +200,16 @@ class DownloadQueue {
 
   run(it) {
     it.status = 'downloading';
+    if (!Array.isArray(it._files)) it._files = [];   // 本次尝试产出的文件清单（跨重试累积；重试时引擎会跳过已存在文件）
     this.active++;
     it._wasActive = true;
     const done = (status, extra = {}) => {
       if (!it._wasActive) return;   // 幂等守卫（会审 P1）：spawn 的 error+close 双触发只算一次
       it.status = status;
       Object.assign(it, extra);
+      if (status === 'done' && this.onDone) {
+        try { this.onDone(it); } catch (e) { console.warn('[queue] onDone hook fail:', e.message); }   // 来源索引（媒体库溯源用）
+      }
       this.active = Math.max(0, this.active - 1);
       it._wasActive = false;
       this.tick();
@@ -302,7 +306,7 @@ class DownloadQueue {
       const line = rawLine.trim();
       if (!line) continue;
       if (it.engine === 'yt-dlp') {
-        if (!line.startsWith('[') && /^[A-Za-z]:\\/.test(line)) { it.filePath = line; continue; }
+        if (!line.startsWith('[') && /^[A-Za-z]:\\/.test(line)) { it.filePath = line; if (!it._files.includes(line)) it._files.push(line); continue; }
         const m = line.match(/\[download\]\s+([\d.]+)%/);
         if (m) it.progress = Math.max(it.progress, parseFloat(m[1]));
         if (line.startsWith('ERROR')) it.error = line;
@@ -311,6 +315,7 @@ class DownloadQueue {
         if (line.startsWith('# ') || line.startsWith('./')) {
           it.fileCount++;
           it.filePath = line.startsWith('# ') ? line.slice(2).trim() : path.join(OUTDIR, line.slice(2));
+          if (!it._files.includes(it.filePath)) it._files.push(it.filePath);
           it.progress = Math.min(99, it.fileCount * 10);
         }
         if (/^ERROR/i.test(line)) it.error = line;

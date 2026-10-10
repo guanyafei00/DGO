@@ -33,6 +33,7 @@ const ai = require('./lib/ai');
 const enginesBoot = require('./lib/engines_boot');
 const updateSign = require('./lib/update_sign');
 const log = require('./lib/log');
+const source = require('./lib/source');
 
 const CHECK_INTERVAL_MS = 10 * 60 * 1000;   // 每站 10 分钟增量检查
 const RULES_INTERVAL_MS = 6 * 3600 * 1000;  // 远程风控规则 6 小时拉一轮
@@ -285,7 +286,7 @@ app.whenReady().then(() => {
   autoupdate.configure({ binDir: binDir() });
   store.configure({ userData });
   subs.configure({ binDir: binDir(), cookiePath, file: path.join(userData, 'subs.json') });
-  library.configure({ outDir });
+  library.configure({ outDir, sourceGet: p => source.get(p) });
   asr.configure({
     binDir: binDir(), modelsDir: path.join(userData, 'asr-models'),
     onPersist: patch => settings.set(patch)   // 默认模型持久化到 settings.json
@@ -314,6 +315,14 @@ app.whenReady().then(() => {
     });
     return asrChain;
   }
+
+  // 来源索引：任务完成 → 记录产出文件 ↔ 来源链接/订阅标记（媒体库溯源用；老文件无记录，UI 不显示徽标）
+  queue.onDone = it => {
+    const files = (Array.isArray(it._files) && it._files.length) ? it._files : (it.filePath ? [it.filePath] : []);
+    if (!files.length) return;
+    source.record(files, { url: it.url, via: it._subs ? 'sub' : 'task', subId: it._subId || null, title: it.title });
+    log.info('source', `来源记录 ${files.length} 个文件 ← ${it.url}`);
+  };
 
   // 恢复标记：恢复时已存在的 done 任务不算「新完成」（不触发媒体库刷新）
   const resumedDone = new Set();
@@ -376,7 +385,7 @@ app.whenReady().then(() => {
     if (raw.status === 'downloading') { raw.status = 'queued'; raw.error = '应用退出中断，已自动重排'; raw.progress = 0; }
     if (raw.status === 'held') raw.status = 'queued';
     if (raw.status === 'queued') {
-      const item = queue.add(raw.url, { engine: raw.engine, title: raw.title, _range: raw._range, _subs: raw._subs, _audio: raw._audio, _transcribe: raw._transcribe });
+      const item = queue.add(raw.url, { engine: raw.engine, title: raw.title, _range: raw._range, _subs: raw._subs, _audio: raw._audio, _transcribe: raw._transcribe, _subId: raw._subId });
       item.filePath = raw.filePath; item.fileCount = raw.fileCount;
     } else {
       queue.items.set(raw.id, raw);
@@ -577,7 +586,7 @@ app.whenReady().then(() => {
     // 即时切换新任务的输出目录（运行中任务沿用开始时的目录）。
     // 注意：调模块级 configure（只会更新 OUTDIR），不能调实例 queue.configure——DownloadQueue 没有该方法（会审 P0 实锤）
     configure({ outDir: dir });
-    library.configure({ outDir: dir });
+    library.configure({ outDir: dir, sourceGet: p => source.get(p) });   // 换目录后来源索引照常可用（按绝对路径匹配）
     return { ok: true, outDir: s.outDir };
   });
   // 网络代理（YouTube 等被墙站点必需）：即时生效于探针/下载引擎/订阅检查

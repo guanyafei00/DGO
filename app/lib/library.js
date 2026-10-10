@@ -8,8 +8,9 @@ const fs = require('fs');
 const path = require('path');
 
 let OUTDIR = null;
+let SOURCE_GET = null;   // 来源索引 getter（main.js 注入）：path → { url, via, subId, title }，可空
 
-function configure({ outDir }) { OUTDIR = outDir; }
+function configure({ outDir, sourceGet }) { OUTDIR = outDir; if (sourceGet !== undefined) SOURCE_GET = sourceGet; }
 
 const VIDEO_EXT = new Set(['.mp4', '.mkv', '.webm', '.mov', '.avi', '.flv', '.m4a', '.mp3']);
 const IMG_EXT = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.avif']);
@@ -98,7 +99,8 @@ async function scan() {
       // yt-dlp 加 --mtime 后用 HTTP Last-Modified（≈视频上传时间）→ 降序 = 最新帖子在前（主人需求）
       files: g.files.sort((a, b) => b.mtime - a.mtime).map(f => ({
         name: f.name, path: f.path, size: f.size, sizeText: fmtSize(f.size),
-        mtime: f.mtime, kind: f.kind
+        mtime: f.mtime, kind: f.kind,
+        src: SOURCE_GET ? SOURCE_GET(f.path) : null   // 来源链接/订阅标记（老文件无记录 → null，UI 不显示）
       }))
     }))
     .sort((a, b) => b.lastMtime - a.lastMtime);

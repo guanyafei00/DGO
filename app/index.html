@@ -738,19 +738,21 @@ async function loadSubs() {
   el.innerHTML = htmls.length ? htmls.join('') : `<div class="empty">还没有订阅——支持 B站UP主 / YouTube频道 / X用户 / Pixiv / 微博 / Reddit / Instagram / Danbooru 等站点主页</div>`;
 }
 
+// 删帖回链：B站 opus/视频、YouTube 视频、X 推文（从文件名前缀提推文 id，尽力而为）、gdl 型退订阅主页
+function goneLinkUrl(s, id) {
+  if (s.kind === 'bilibili') return /^\d+$/.test(id) ? `https://www.bilibili.com/opus/${id}` : `https://www.bilibili.com/video/${id}`;
+  if (s.kind === 'youtube') return `https://www.youtube.com/watch?v=${id}`;
+  if (s.kind === 'x') { const m = /^(\d{5,})/.exec(String(id)); return m ? `https://x.com/i/web/status/${m[1]}` : (s.url || ''); }
+  return s.url || '';   // gdl 型：文件名无稳定回链，退订阅主页
+}
 // 源头已删除明细：可展开，逐条链回源 + 对应本地文件（gallery-dl 用动态 id 命名、BV 号在视频名里，能搜到）
 function goneBadge(s) {
   const gone = s.gone || [];
   if (!s.sourceDeleted) return '';
   const fmap = _goneFilesMap[s.id] || {};
   const items = gone.map(id => {
-    let html = '';
-    if (s.kind === 'bilibili') {
-      const url = /^\d+$/.test(id) ? `https://www.bilibili.com/opus/${id}` : `https://www.bilibili.com/video/${id}`;
-      html += `<a href="#" onclick="window.fetchie.openExternal('${url}');return false">${esc(id)}</a>`;
-    } else {
-      html += esc(id);
-    }
+    const url = goneLinkUrl(s, id);
+    let html = url ? `<a href="#" onclick="openSrc('${escAttr(url)}');return false">${esc(id)}</a>` : esc(id);
     const local = fmap[id] || [];
     if (local.length) {
       html += ` — <a href="#" onclick="locateGoneFile('${s.id}','${escAttr(id)}');return false" style="color:var(--green)">📁 本地文件</a>`;
@@ -930,13 +932,27 @@ function renderLibrary() {
         <div class="t-thumb" style="width:36px;height:28px;font-size:14px">${kindIcon(f.kind)}</div>
         <div class="t-info">
           <div class="name" title="${esc(f.path)}">${esc(f.name)}</div>
-          <div class="meta">${f.sizeText} · ${timeAgo(f.mtime)}${asrStates[f.path] ? ' · 📝 ' + (asrStates[f.path].state === 'running' ? '转写中 ' + asrStates[f.path].pct + '%' : asrStates[f.path].state === 'done' ? '已转写' : '转写失败') : ''}</div>
+          <div class="meta">${f.sizeText} · ${timeAgo(f.mtime)}${asrStates[f.path] ? ' · 📝 ' + (asrStates[f.path].state === 'running' ? '转写中 ' + asrStates[f.path].pct + '%' : asrStates[f.path].state === 'done' ? '已转写' : '转写失败') : ''}${srcBadge(f)}</div>
         </div>
         ${/\.(mp4|mkv|webm|mov|avi|flv|m4a|mp3|wav)$/i.test(f.name) ? `<div class="x" onclick="event.stopPropagation();transcribeFile('${escAttr(f.path)}')" title="本地转写">📝</div><div class="x" onclick="event.stopPropagation();aiPanel('${escAttr(f.path)}')" title="AI 文稿助理（摘要/翻译）">✨</div>` : ''}
         <div class="x" onclick="openPath('${escAttr(f.path)}')" title="打开所在文件夹">📁</div>
         <div class="x" onclick="event.stopPropagation();trashFile('${escAttr(f.path)}')" title="删除（移入回收站，可恢复）" style="color:var(--red)">🗑</div>
       </div>`).join('') : ''}`;
   }).join('');
+}
+
+// 来源徽标：站点 + 单条/订阅 + 一键打开来源链接（老文件无索引记录 → 不显示，不撒谎）
+function srcBadge(f) {
+  const s = f.src;
+  if (!s || !s.url) return '';
+  const via = s.via === 'sub'
+    ? '<span style="font-size:10px;color:#1d4ed8;background:#eff6ff;border-radius:5px;padding:1px 6px">订阅</span>'
+    : '<span style="font-size:10px;color:var(--txt2);background:var(--panel2);border-radius:5px;padding:1px 6px">单条</span>';
+  return ` · ${via} <a href="#" onclick="openSrc('${escAttr(s.url)}');return false" title="打开来源页面：${escAttr(s.url)}" style="text-decoration:none">🔗 来源</a>`;
+}
+async function openSrc(u) {
+  const r = await window.fetchie.openExternal(u);
+  if (r && !r.ok) toast(r.reason);
 }
 
 function fmtBytes(b) {
