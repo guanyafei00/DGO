@@ -1295,7 +1295,7 @@ app.whenReady().then(() => {
           }, 1000);
         });
         for (const s of snap.filter(x => ids.has(x.id))) console.log('[autotest] task:', s.status, s.engine, s.progress + '%', s.fileCount || '', s.error || '');
-        const pass = snap.filter(x => ids.has(x.id)).every(s => s.status === 'done');
+        let pass = snap.filter(x => ids.has(x.id)).every(s => s.status === 'done');
         // 音频模式延后入队：t1 已 done，同 URL 不再被去重拦截（顺带验证 done 后可重下）
         const t3 = queue.add(AUDIO_URL, { engine: 'yt-dlp', title: 'autotest-audio', _audio: true });
         if (!t3 || t3.duplicate || t3.id === t1.id) throw new Error('audio task blocked by dedup (t1 should be done)');
@@ -1327,6 +1327,83 @@ app.whenReady().then(() => {
           (lib.totalSize / 1048576).toFixed(1) + 'MB',
           lib.groups.slice(0, 3).map(g => `${g.site}/${g.uploader}(${g.fileCount})`).join(', '));
         if (lib.totalFiles < 1) throw new Error('library scan found no files');
+
+        // ===== DGO6 QA 回归检查点（v0.1.3 修复轮）：磁盘挂起 / 文稿检索 / 字幕翻译 / 迁移包 =====
+        // 任何一项失败：pass 置 false → 最终输出 M1_E2E_FAIL（不中断后续 RSS 检查）
+        let dgo6Fail = null;
+        const dgo6Check = async (name, fn) => {
+          try { await fn(); console.log('[autotest] dgo6/' + name + ': OK'); }
+          catch (e) { dgo6Fail = dgo6Fail || name; console.log('[autotest] dgo6/' + name + ': FAIL — ' + e.message); }
+        };
+        // ① 磁盘挂起：阈值拉到 1TB → 新任务必须立即 held（不 spawn 引擎）→ 恢复阈值 → wakeHeld 回队 → 取消清理
+        await dgo6Check('disk-hold', () => {
+          const prevMinFree = settings.get().minFreeMB;
+          const probe = queue.add('https://www.bilibili.com/opus/dgo6-diskhold-probe', { engine: 'yt-dlp', title: 'autotest-diskhold-probe' });
+          let s = queue.snapshot().find(x => x.id === probe.id);
+          if (!s || s.status !== 'held' || !String(s.error || '').includes('磁盘空间不足'))
+            throw new Error('磁盘不足应立即挂起: ' + JSON.stringify(s && { status: s.status, error: s.error }));
+          settings.set({ minFreeMB: prevMinFree });
+          queue.reconfigure({ minFreeMB: prevMinFree });
+          queue.wakeHeld();
+          s = queue.snapshot().find(x => x.id === probe.id);
+          if (!s || s.status !== 'queued') throw new Error('空间恢复后应回队: ' + JSON.stringify(s && s.status));
+          queue.cancel(probe.id);
+          if (!queue.snapshot().find(x => x.id === probe.id && x.status === 'canceled')) throw new Error('回队后应可取消清理');
+        });
+        // ② 文稿全文检索：造探针文稿 → reindex → 中文 2-gram 命中 + 原型键 token（DGO6-01 回归）不崩
+        await dgo6Check('text-search', () => {
+          const dir = path.join(app.getPath('userData'), 'dgo6-probe');
+          const media = path.join(dir, 'bilibili', 'autotestUP', 'autotest视频 [BVdgo6].mp4');
+          fs.mkdirSync(path.dirname(media), { recursive: true });
+          fs.writeFileSync(media, 'x');
+          fs.writeFileSync(media.replace(/\.mp4$/, '.txt'), 'DGO 自动测试文稿：量子计算与 constructor 方法入门。');
+          const r = textindex.reindex([{ path: media, title: path.basename(media), up: 'autotestUP' }]);
+          if (r.indexed !== 1) throw new Error('reindex 应收录 1 篇: ' + JSON.stringify(r));
+          const hits = textindex.search('量子计算');
+          if (hits.length !== 1 || !String(hits[0].snippet || '').includes('量子')) throw new Error('中文 2-gram 检索失败');
+          if (textindex.search('constructor').length !== 1) throw new Error('原型键 token 检索失败（DGO6-01 回归）');
+          fs.rmSync(dir, { recursive: true, force: true });
+          textindex.reindex([]);   // 摘除探针文稿，不留脏索引
+        });
+        // ③ 字幕翻译（假翻译器直调，不走 ai.ready/网络）：双语产物含原文+译文
+        await dgo6Check('srt-translate', async () => {
+          const dir = path.join(app.getPath('userData'), 'dgo6-probe');
+          fs.mkdirSync(dir, { recursive: true });
+          const src = path.join(dir, 'autotest.srt');
+          fs.writeFileSync(src, '1\n00:00:01,000 --> 00:00:02,000\nhello autotest\n\n2\n00:00:03,000 --> 00:00:04,000\nsecond line\n');
+          const fake = async prompt => prompt.split('\n')
+            .map(l => { const m = /^(\d+)\|(.+)$/.exec(l); return m ? m[1] + '|译' + m[1] : ''; })
+            .filter(Boolean).join('\n');
+          const r = await srtLib.translateSrt(src, { translator: fake });
+          const out = fs.readFileSync(r.outFile, 'utf-8');
+          if (!out.includes('hello autotest') || !out.includes('译1') || !out.includes('译2')) throw new Error('双语产物缺失原文/译文');
+          fs.rmSync(src, { force: true }); fs.rmSync(r.outFile, { force: true });
+        });
+        // ④ 迁移包 collect+apply 对象直调（绕 dialog）：自环导入应全部去重跳过、无 errors；畸形包逐条 errors 不中断（DGO6-04 回归）
+        await dgo6Check('bundle-roundtrip', async () => {
+          const udd = app.getPath('userData');
+          const c = backup.collect({ settingsFile: path.join(udd, 'settings.json'), subsFile: path.join(udd, 'subs.json') });
+          if (!c.ok || c.bundle.app !== 'DGO' || !c.bundle._warning) throw new Error('collect 失败或缺 _warning');
+          const beforeUrls = subs.list().map(su => su.url);
+          const a = await backup.apply(JSON.parse(JSON.stringify(c.bundle)), {
+            settingsSetter: p => {
+              const keep = { ...p }; delete keep.outDir;   // 不动正在用的下载目录
+              settings.set(keep);
+              if (keep.minFreeMB !== undefined) queue.reconfigure({ minFreeMB: keep.minFreeMB });
+            },
+            subsAdd: (url, name, extra) => { const r2 = subs.add(url, name); if (r2.ok && extra) subs.update(r2.sub.id, extra); return r2; },
+            subsUrls: beforeUrls,
+          });
+          if (!a.ok) throw new Error('apply 自环失败: ' + (a.reason || ''));
+          if (a.subsAdded !== 0 || a.subsSkipped !== beforeUrls.length)
+            throw new Error(`订阅应全部去重跳过: +${a.subsAdded}/skip=${a.subsSkipped}（期望 skip=${beforeUrls.length}）`);
+          if (a.errors.length) throw new Error('apply 不应有 errors: ' + a.errors.join(' | '));
+          const bad = await backup.apply({ app: 'DGO', bundleVersion: 1, settings: {}, subs: [null, 42] },
+            { settingsSetter: () => {}, subsAdd: () => ({ ok: true }), subsUrls: [] });
+          if (!bad.ok || bad.errors.length < 2) throw new Error('畸形包应逐条记 errors 不中断（DGO6-04 回归）: ' + JSON.stringify(bad));
+        });
+        if (dgo6Fail) { pass = false; console.log('[autotest] dgo6 summary: FAIL (' + dgo6Fail + ')'); }
+        else console.log('[autotest] dgo6 summary: 4/4 OK');
 
         // RSS 通路验证：订阅影视飓风 → 探针拉动态列表（投稿+图文）
         // 本测试机 IP 可能处于风控冷却期（空列表），断言分两级：
