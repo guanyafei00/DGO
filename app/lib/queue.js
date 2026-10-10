@@ -77,9 +77,17 @@ class DownloadQueue {
     const u = String(url || '').trim();
     if (!u) return null;
     // 查重（会审 P0 修复）：同 URL 活跃任务直接返回已有项并打 duplicate 标记，UI 提示不重复入队
+    // 会审 DGO6-Q7：手工挑安全字段——整包展开会把 _child/_files/_diskTimer/_runSeq 等内部
+    // 句柄泄漏进 IPC 序列化（spawn 子进程对象/大数组跨进程传递是事故隐患）
     for (const it of this.items.values()) {
       if (it.url === u && ['queued', 'downloading', 'held'].includes(it.status)) {
-        return { ...it, duplicate: true };
+        return {
+          id: it.id, url: it.url, engine: it.engine, status: it.status,
+          progress: it.progress, title: it.title, uploader: it.uploader,
+          filePath: it.filePath, fileCount: it.fileCount, error: it.error, addedAt: it.addedAt,
+          _range: it._range, _subs: it._subs, _audio: it._audio, _transcribe: it._transcribe, _subId: it._subId,
+          duplicate: true,
+        };
       }
     }
     const id = 't' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
@@ -168,8 +176,9 @@ class DownloadQueue {
 
   snapshot() {
     return this.order.map(id => {
-      // 保留 _range（会审修复：先前被剥离导致范围任务崩溃恢复后全量重下）；_files 巨大且只供 onDone 钩子用，不入快照
-      const { _child, _wasActive, _files, _diskTimer, _diskHeld, ...rest } = this.items.get(id);
+      // 保留 _range（会审修复：先前被剥离导致范围任务崩溃恢复后全量重下）；_files 巨大且只供 onDone 钩子用，不入快照；
+      // 会审 DGO6-Q7：_runSeq 是 run 序号（内部幂等标记），不得泄漏给渲染层
+      const { _child, _wasActive, _files, _diskTimer, _diskHeld, _runSeq, ...rest } = this.items.get(id);
       if (rest.status === 'held') rest.heldRemainMs = strategy.breakerRemainMs(rest.url);
       return rest;
     });
