@@ -1009,10 +1009,14 @@ app.whenReady().then(() => {
         console.log('[autotest] strategy bilibili:', JSON.stringify({ sleep: st.sleep, level: st.level, threshold: st.breakerThreshold }));
         if (!st.sleep || st.sleep < 3) throw new Error('strategy bilibili sleep invalid');
 
-        const t1 = queue.add('https://www.bilibili.com/video/BV1GJ411x7h7', { engine: 'yt-dlp', title: 'autotest-video' });
+        // 去重探针：活跃任务同 URL 再 add 必须返回已有项并带 duplicate 标记（会审 P0 行为回归验证）
+        const AUDIO_URL = 'https://www.bilibili.com/video/BV1GJ411x7h7';
+        const t1 = queue.add(AUDIO_URL, { engine: 'yt-dlp', title: 'autotest-video' });
+        const dup = queue.add(AUDIO_URL, { engine: 'yt-dlp', title: 'autotest-dup-probe' });
+        if (!dup || !dup.duplicate || dup.id !== t1.id) throw new Error('URL dedup broken: ' + JSON.stringify(dup && { id: dup.id, duplicate: !!dup.duplicate }));
+        console.log('[autotest] dedup probe: OK (same-URL add returned existing', dup.id + ')');
         const t2 = queue.add('https://www.bilibili.com/opus/1251190976967344129', { engine: 'gallery-dl', title: 'autotest-gallery', _range: '1-3' });
-        const t3 = queue.add('https://www.bilibili.com/video/BV1GJ411x7h7', { engine: 'yt-dlp', title: 'autotest-audio', _audio: true });
-        console.log('[autotest] tasks added:', t1.id, t2.id, t3.id);
+        console.log('[autotest] tasks added:', t1.id, t2.id, '（音频任务延后到 t1 完成后再入队——同 URL 去重只拦活跃任务，老写法 t3 会被拦成 t1 导致音频模式没跑）');
 
         // 远程规则热更通路：对象直调验证「校验+合并+生效」，persist=false 不污染 remote-rules.json
         strategy.applyRemoteRules([
@@ -1030,7 +1034,7 @@ app.whenReady().then(() => {
         const rr = await refreshRemoteRules();
         console.log('[autotest] rules fetch:', rr.ok ? `OK version=${rr.version} applied=${rr.applied}/${rr.total}` : 'WARN ' + rr.reason);
 
-        const ids = new Set([t1.id, t2.id, t3.id]);
+        const ids = new Set([t1.id, t2.id]);
         const snap = await new Promise(resolve => {
           const iv = setInterval(() => {
             const s = queue.snapshot();
@@ -1039,9 +1043,19 @@ app.whenReady().then(() => {
         });
         for (const s of snap.filter(x => ids.has(x.id))) console.log('[autotest] task:', s.status, s.engine, s.progress + '%', s.fileCount || '', s.error || '');
         const pass = snap.filter(x => ids.has(x.id)).every(s => s.status === 'done');
-        const audioTask = snap.find(x => x.id === t3.id);
-        const audioOk = audioTask && audioTask.status === 'done' && /\.mp3$/i.test(audioTask.filePath || '');
-        console.log('[autotest] audio mode product:', audioOk ? 'OK ' + audioTask.filePath : 'FAIL ' + (audioTask ? audioTask.filePath : '?'));
+        // 音频模式延后入队：t1 已 done，同 URL 不再被去重拦截（顺带验证 done 后可重下）
+        const t3 = queue.add(AUDIO_URL, { engine: 'yt-dlp', title: 'autotest-audio', _audio: true });
+        if (!t3 || t3.duplicate || t3.id === t1.id) throw new Error('audio task blocked by dedup (t1 should be done)');
+        console.log('[autotest] audio task added:', t3.id);
+        const audioTask = await new Promise(resolve => {
+          const iv = setInterval(() => {
+            const s = queue.snapshot().find(x => x.id === t3.id);
+            if (s && ['done', 'error', 'canceled'].includes(s.status)) { clearInterval(iv); resolve(s); }
+          }, 1000);
+        });
+        console.log('[autotest] task:', audioTask.status, audioTask.engine, audioTask.progress + '%', audioTask.error || '');
+        const audioOk = audioTask.status === 'done' && /\.mp3$/i.test(audioTask.filePath || '');
+        console.log('[autotest] audio mode product:', audioOk ? 'OK ' + audioTask.filePath : 'FAIL ' + (audioTask.filePath || '?'));
         if (!audioOk) throw new Error('audio-only task did not produce mp3');
 
         // 本地转写断言：有模型才跑（tiny 75MB；无模型 WARN 不阻塞）
