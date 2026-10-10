@@ -11,12 +11,14 @@ let BIN = path.join(__dirname, '..', 'resources', 'bin');
 let COOKIE = path.join(__dirname, '..', 'resources', 'cookies.txt');
 let OUTDIR = null;
 let PROXY = null;
+let MIN_FREE_MB = 1000;   // #70①：目标盘剩余空间低于此值任务挂起（0=关闭检测）
 let GDL_CFG = null;   // gallery-dl 配置：stdout/stderr 强制 UTF-8（韩/日/emoji 否则被内部替换成 '???'）
-function configure({ binDir, cookiePath, outDir, proxy }) {
+function configure({ binDir, cookiePath, outDir, proxy, minFreeMB }) {
   if (binDir) BIN = binDir;
   if (cookiePath) COOKIE = cookiePath;
   if (outDir) OUTDIR = outDir;
   if (proxy !== undefined) PROXY = proxy || null;   // 空串清除
+  if (minFreeMB !== undefined) MIN_FREE_MB = Math.max(0, Number(minFreeMB) || 0);
   try {
     GDL_CFG = path.join(path.dirname(COOKIE), 'gdl-utf8.json');
     fs.writeFileSync(GDL_CFG, JSON.stringify({ output: {
@@ -48,6 +50,18 @@ function killTree(child) {
   }
   try { child.kill('SIGKILL'); } catch (e) {}
 }
+
+// #70① 磁盘空间检测：下载目录所在盘剩余 < MIN_FREE_MB 视为不足。
+// statfs 在部分环境不可用时返回 null（= 跳过检测，绝不能因检测失败阻断下载）
+function freeMB() {
+  if (!OUTDIR || !MIN_FREE_MB) return null;
+  try {
+    if (typeof fs.statfsSync !== 'function') return null;
+    const st = fs.statfsSync(OUTDIR);
+    return Math.floor(st.bavail * st.bsize / (1024 * 1024));
+  } catch (e) { return null; }
+}
+function diskLow() { const m = freeMB(); return m !== null && m < MIN_FREE_MB; }
 
 class DownloadQueue {
   constructor(broadcast) {
@@ -113,6 +127,7 @@ class DownloadQueue {
     it.error = null;
     it.progress = 0;
     it.fileCount = 0;
+    it._diskHeld = false;   // 手动重试 = 用户确认空间已处理，清磁盘挂起标记
     this.tick(); this.push();
     return true;
   }
@@ -152,7 +167,7 @@ class DownloadQueue {
   snapshot() {
     return this.order.map(id => {
       // 保留 _range（会审修复：先前被剥离导致范围任务崩溃恢复后全量重下）；_files 巨大且只供 onDone 钩子用，不入快照
-      const { _child, _wasActive, _files, ...rest } = this.items.get(id);
+      const { _child, _wasActive, _files, _diskTimer, _diskHeld, ...rest } = this.items.get(id);
       if (rest.status === 'held') rest.heldRemainMs = strategy.breakerRemainMs(rest.url);
       return rest;
     });
@@ -173,28 +188,54 @@ class DownloadQueue {
   }
 
   tick() {
-    // 熔断解除的 held 任务回队
+    // 熔断解除的 held 任务回队（_diskHeld 除外——磁盘挂起要等空间恢复，见 diskWatch）
     for (const id of this.order) {
       const it = this.items.get(id);
-      if (it.status === 'held' && !strategy.isBreakered(it.url)) {
+      if (it.status === 'held' && !it._diskHeld && !strategy.isBreakered(it.url)) {
         it.status = 'queued';
         it.error = null;
+      }
+    }
+    // 入队/回队时磁盘不足 → 直接挂起（避免启动一瞬又停）
+    if (diskLow()) {
+      for (const id of this.order) {
+        const it = this.items.get(id);
+        if (it.status === 'queued') {
+          it.status = 'held';
+          it._diskHeld = true;
+          it.error = '磁盘空间不足（剩余 ' + freeMB() + ' MB < ' + MIN_FREE_MB + ' MB），已暂停——清理空间后自动继续';
+        }
       }
     }
     while (this.active < this.max) {
       const next = this.order.map(i => this.items.get(i))
         .find(it => it.status === 'queued' && !strategy.isBreakered(it.url));
       if (!next) break;
+      if (diskLow()) { next.status = 'held'; next._diskHeld = true; next.error = '磁盘空间不足，已暂停——清理空间后自动继续'; continue; }
       this.run(next);
     }
-    // 若有 held 任务，或存在被熔断卡住的 queued 任务（会审 DGO-007：否则取消 held 后同站 queued 永久无唤醒源），定时回查
+    // 定时回查：held（熔断/磁盘）或被熔断卡住的 queued，30 秒一轮。
+    // 磁盘恢复的挂起任务也在这里唤醒（#70①）
     const hasHeld = this.order.some(i => this.items.get(i).status === 'held');
     const queuedOnBreaker = !hasHeld && this.order.some(i => {
       const it = this.items.get(i);
       return it.status === 'queued' && strategy.isBreakered(it.url);
     });
     if ((hasHeld || queuedOnBreaker) && !this._heldTimer) {
-      this._heldTimer = setTimeout(() => { this._heldTimer = null; this.tick(); this.push(); }, 30 * 1000);
+      this._heldTimer = setTimeout(() => { this._heldTimer = null; this.wakeHeld(); this.tick(); this.push(); }, 30 * 1000);
+    }
+  }
+
+  // 磁盘挂起任务：空间恢复即回队（#70①）
+  wakeHeld() {
+    if (diskLow()) return;
+    for (const id of this.order) {
+      const it = this.items.get(id);
+      if (it.status === 'held' && it._diskHeld) {
+        it._diskHeld = false;
+        it.status = 'queued';
+        it.error = null;
+      }
     }
   }
 
@@ -227,16 +268,34 @@ class DownloadQueue {
     const child = spawn(args.exe, args.args, { windowsHide: true });
     it._child = child;
 
+    // #70① 下载中每 30 秒查一次磁盘：写满前主动挂起（杀进程树防半截文件），空间恢复后在 wakeHeld 回队
+    it._diskTimer = setInterval(() => {
+      if (it.status !== 'downloading') { clearInterval(it._diskTimer); it._diskTimer = null; return; }
+      if (diskLow()) {
+        killTree(child);
+        it.status = 'held';
+        it._diskHeld = true;
+        it.error = '磁盘空间不足（剩余 ' + freeMB() + ' MB），已暂停——清理空间后自动继续';
+        this.active = Math.max(0, this.active - 1);
+        it._wasActive = false;
+        clearInterval(it._diskTimer); it._diskTimer = null;
+        this.tick(); this.push();
+      }
+    }, 30 * 1000);
+    const clearDiskTimer = () => { if (it._diskTimer) { clearInterval(it._diskTimer); it._diskTimer = null; } };
+
     child.stdout.on('data', d => this.parseOutput(it, decOut.decode(d, { stream: true })));
     child.stderr.on('data', d => this.parseOutput(it, decErr.decode(d, { stream: true })));
     child.on('error', e => {
       // 引擎文件缺失（首启在线引导还没下载完 / 杀软误删）→ 给出可行动的提示而非裸 ENOENT
+      clearDiskTimer();
       const msg = /ENOENT|spawn/i.test(String(e)) && !fs.existsSync(args.exe)
         ? '下载引擎尚未就绪（首次运行需联网自动下载，几十秒后重试即可；若反复出现请检查杀毒软件是否拦截）'
         : String(e);
       done('error', { error: msg });
     });
     child.on('close', code => {
+      clearDiskTimer();
       if (!it._wasActive || it.status === 'canceled') return;   // 幂等守卫（含 cancel 后的 close）
       if (code === 0) {
         strategy.reportSuccess(it.url);
@@ -335,4 +394,4 @@ class DownloadQueue {
   }
 }
 
-module.exports = { DownloadQueue, configure };
+module.exports = { DownloadQueue, configure, reconfigure: configure };

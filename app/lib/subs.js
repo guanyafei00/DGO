@@ -94,6 +94,10 @@ function add(url, name) {
     kind: c.kind, uid: c.uid || null, handle: c.handle || null, name: name || ('订阅 ' + (subs.length + 1)),
     lastCheck: 0, lastNew: 0, known: [], checked: 0,
     autoBackfill: false,   // 会审 DGO-002：是否回溯历史由添加后的确认弹窗决定（用户拒绝必须生效，不许 10 分钟后偷跑）
+    group: '',             // #70②：分组名（空=未分组）
+    intervalMin: 0,        // #70②：检查频率档位（0=跟随全局 10 分钟；可选 10/30/60）
+    userPaused: false,     // #70②：用户手动暂停（与连续失败自动暂停 paused 区分）
+    autoTranscribe: false, // #70④：新下载自动转写出字幕
   };
   subs.push(sub);
   save();
@@ -183,6 +187,22 @@ function remove(id) {
   const i = subs.findIndex(s => s.id === id);
   if (i < 0) return false;
   subs.splice(i, 1); save(); return true;
+}
+
+// #70② 订阅属性更新（白名单字段，防注入未知键）
+const UPDATABLE = ['userPaused', 'group', 'intervalMin', 'autoTranscribe'];
+function update(id, patch) {
+  const s = get(id);
+  if (!s) return { ok: false, reason: '订阅不存在' };
+  if (!patch || typeof patch !== 'object') return { ok: false, reason: '无效的更新内容' };
+  for (const k of UPDATABLE) {
+    if (patch[k] === undefined) continue;
+    if (k === 'userPaused' || k === 'autoTranscribe') s[k] = !!patch[k];
+    else if (k === 'group') s[k] = String(patch[k] || '').trim().slice(0, 20);
+    else if (k === 'intervalMin') s[k] = [0, 10, 30, 60].includes(Number(patch[k])) ? Number(patch[k]) : 0;
+  }
+  save();
+  return { ok: true, sub: { ...s, known: undefined } };
 }
 
 // B站订阅检查：bili-probe.exe 探针（wbi 签名 + 每次刷新游客指纹）拉动态列表（投稿视频+图文动态）。
@@ -384,4 +404,4 @@ function itemUrl(sub, it) {
   return null;
 }
 
-module.exports = { configure, list, get, add, remove, checkSub, itemUrl, backfill, setProxy, refreshName, onNameChange };
+module.exports = { configure, list, get, add, remove, update, checkSub, itemUrl, backfill, setProxy, refreshName, onNameChange, save };
