@@ -1,0 +1,52 @@
+# 更新签名私钥（绝不能提交！泄露 = 更新通道可被劫持）
+update-signing/private.pem
+*.pem
+
+# 构建产物
+app/dist/
+app/node_modules/
+
+# GPL 合规：安装包不捆绑的二进制（gallery-dl 走 Codeberg 官方源，ffmpeg 走 gyan.dev）
+app/resources/bin/gallery-dl.exe
+app/resources/bin/ffmpeg.exe
+# 凭据/设备指纹文件绝不入库（会审 DGO-019）
+app/resources/cookies.txt
+cookies.txt
+
+# 内部文档（会审/调研报告，不对外）
+DGO会审材料_v3.md
+DGO第三次会审报告.md
+DGO竞品调研报告.md
+
+# 内部工作文件（不入公开仓库）
+.workbuddy/
+*.genie
+overview.md
+*报告.md
+*调研*.md
+*原型*.html
+DGO支持网站名单.md
+风控自适应架构说明.md
+fetchie-rules-site/
+
+# 测试下载物与图标候选稿
+app/gallery-dl/
+icons/
+
+# 本地运行时文件
+*.pid
+nul
+# 截图目录：README 三张必须入库，其余忽略
+screenshots/*
+!screenshots/dgo-library.png
+!screenshots/dgo-subs.png
+!screenshots/dgo-home.png
+
+# 测试与下载产物（不入库）
+test/
+app/downloads/
+app/.npmcache/
+
+# 临时
+*.log
+.DS_Store

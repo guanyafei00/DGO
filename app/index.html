@@ -1,0 +1,1129 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<!-- 会审 T2a：CSP——渲染层失守后禁止加载远程脚本/连接外域（本应用全部走 IPC，无需外部资源；
+     inline script/事件处理器依赖 unsafe-inline，本地 file:// 页面风险可控）-->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; frame-src 'none'">
+<title>DGO — 媒体下载与订阅</title>
+<style>
+  :root {
+    --bg:#f5f6f8; --panel:#ffffff; --panel2:#f0f2f5; --line:#e4e7ec;
+    --txt:#1c2027; --txt2:#7a8191; --acc:#d97706; --acc2:#b45309; --accbg:#fef3e2;
+    --green:#15803d; --greenbg:#ecfdf3; --red:#dc2626;
+    --r:14px; --shadow:0 1px 3px rgba(16,24,40,.06), 0 8px 24px rgba(16,24,40,.05);
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family:"Segoe UI","Microsoft YaHei",system-ui,sans-serif; background:var(--bg); color:var(--txt); height:100dvh; display:flex; overflow:hidden; }
+
+  /* ===== 侧边栏（原型 v0.6 布局）===== */
+  .sidebar { width:200px; background:var(--panel); border-right:1px solid var(--line); padding:14px 10px; display:flex; flex-direction:column; gap:3px; flex-shrink:0; }
+  .logo { display:flex; align-items:center; gap:9px; font-weight:800; font-size:14.5px; letter-spacing:.3px; padding:4px 13px 14px; }
+  .logo .gem { width:22px; height:22px; border-radius:7px; background:linear-gradient(135deg,#f7b955,#d97706); display:inline-flex; align-items:center; justify-content:center; font-size:12px; color:#fff; }
+  .logo .tag { font-size:10px; color:var(--acc2); background:var(--accbg); border-radius:5px; padding:2px 7px; font-weight:600; }
+  .nav { display:flex; align-items:center; gap:10px; padding:10px 13px; border-radius:10px; color:var(--txt2); font-size:13.5px; cursor:pointer; user-select:none; transition:.15s; }
+  .nav:hover { background:var(--panel2); color:var(--txt); }
+  .nav.on { background:var(--accbg); color:var(--acc2); font-weight:700; }
+  .nav .cnt { margin-left:auto; background:var(--panel2); color:var(--txt2); font-size:10.5px; font-weight:600; border-radius:9px; padding:1px 7px; }
+  .nav.on .cnt { background:#fff; color:var(--acc2); }
+  .side-foot { margin-top:auto; font-size:11.5px; color:var(--txt2); padding:11px 13px; border-top:1px solid var(--line); line-height:2.1; }
+  .side-foot b { color:var(--green); font-size:10.5px; font-weight:600; }
+  .side-foot .act { cursor:pointer; }
+  .side-foot .act:hover { color:var(--acc2); }
+  #loginBadge { cursor:pointer; }
+  #updBadge { display:none; color:var(--acc2); cursor:pointer; font-weight:700; }
+
+  .main { flex:1; display:flex; flex-direction:column; min-width:0; }
+  .page { display:none; flex:1; overflow-y:auto; padding:20px 26px 26px; min-height:0; }
+  .page.on { display:block; }
+
+  /* ===== 粘贴框 + pick 选项 ===== */
+  .paste-box { display:flex; gap:10px; align-items:center; background:var(--panel); border:1.5px solid var(--line); border-radius:var(--r); padding:13px 15px; box-shadow:var(--shadow); transition:.2s; }
+  .paste-box:focus-within { border-color:var(--acc); box-shadow:0 0 0 3px rgba(217,119,6,.1); }
+  .paste-box span { font-size:20px; }
+  textarea { flex:1; border:none; outline:none; resize:none; font:inherit; font-size:13.5px; min-height:44px; color:var(--txt); background:transparent; }
+  .btn-dl { background:linear-gradient(135deg,#f29c2b,#d97706); border:none; color:#fff; font-weight:700; font-size:13px; padding:10px 20px; border-radius:10px; cursor:pointer; white-space:nowrap; box-shadow:0 4px 12px rgba(217,119,6,.25); }
+  .btn-dl:hover { filter:brightness(.96); }
+  .hint { font-size:11.5px; color:var(--txt2); margin:8px 2px 0; line-height:1.8; }
+  .hint b { color:var(--acc2); font-weight:600; }
+
+  .opts { display:flex; gap:9px; margin-top:12px; flex-wrap:wrap; align-items:center; }
+  .pick { display:flex; align-items:center; gap:7px; background:var(--panel); border:1.5px solid var(--line); border-radius:10px; padding:8px 13px; font-size:12.5px; cursor:pointer; user-select:none; transition:.15s; box-shadow:var(--shadow); }
+  .pick.on { border-color:#f2c078; background:var(--accbg); }
+  .pick .box { width:15px; height:15px; border-radius:4.5px; border:1.5px solid #c3c9d4; display:flex; align-items:center; justify-content:center; font-size:10px; color:transparent; transition:.15s; flex-shrink:0; }
+  .pick.on .box { background:var(--acc); border-color:var(--acc); color:#fff; font-weight:900; }
+  .pick .n { color:var(--txt2); font-size:11px; }
+
+  .sec-t { font-size:12px; color:var(--txt2); margin:18px 2px 10px; display:flex; align-items:center; gap:8px; font-weight:600; }
+  .sec-t::after { content:""; flex:1; height:1px; background:var(--line); }
+  .sec-t .cnt { background:var(--panel2); border-radius:9px; padding:1px 8px; font-size:11px; }
+
+  .task { display:flex; align-items:center; gap:14px; background:var(--panel); border:1px solid var(--line); border-radius:var(--r); padding:12px 15px; margin-bottom:10px; box-shadow:var(--shadow); }
+  .t-thumb { width:64px; height:40px; border-radius:9px; background:var(--panel2); display:flex; align-items:center; justify-content:center; font-size:17px; flex-shrink:0; position:relative; }
+  .t-thumb .eng { position:absolute; bottom:-5px; right:-5px; font-size:8.5px; background:var(--txt); color:#fff; border-radius:4px; padding:1px 5px; font-weight:600; }
+  .t-info { flex:1; min-width:0; }
+  .t-info .name { font-size:13.5px; font-weight:650; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .t-info .meta { font-size:11px; color:var(--txt2); margin-top:4px; display:flex; gap:10px; flex-wrap:wrap; }
+  .bar { height:5px; border-radius:3px; background:#eceff3; margin-top:9px; overflow:hidden; }
+  .bar i { display:block; height:100%; background:linear-gradient(90deg,#f29c2b,#f7b955); border-radius:3px; transition:width .3s; }
+  .st { font-size:11px; font-weight:700; padding:4px 11px; border-radius:8px; white-space:nowrap; }
+  .st.queued { background:var(--panel2); color:var(--txt2); }
+  .st.downloading { background:var(--accbg); color:var(--acc2); }
+  .st.held { background:#fef9c3; color:#a16207; }
+  .st.done { background:var(--greenbg); color:var(--green); }
+  .st.error, .st.canceled { background:#fee2e2; color:var(--red); }
+  .x { cursor:pointer; color:var(--txt2); font-size:13px; padding:4px 7px; border-radius:6px; }
+  .x:hover { background:var(--panel2); color:var(--red); }
+
+  .empty { text-align:center; color:var(--txt2); font-size:12.5px; padding:26px 0; border:1.5px dashed var(--line); border-radius:var(--r); }
+
+  /* ===== 卡片式设置（原型 v0.6）===== */
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:var(--r); padding:17px 19px; margin-bottom:14px; box-shadow:var(--shadow); }
+  .card h3 { font-size:13.5px; margin-bottom:4px; display:flex; align-items:center; gap:8px; }
+  .card h3 .rec { font-size:10px; color:var(--acc2); background:var(--accbg); border-radius:5px; padding:1px 7px; font-weight:700; }
+  .card .desc { font-size:11.5px; color:var(--txt2); margin-bottom:13px; line-height:1.7; }
+  .row { display:flex; align-items:center; gap:10px; margin-bottom:10px; }
+  .row label { width:128px; font-size:12.5px; color:var(--txt2); flex-shrink:0; }
+  .row input, .row select { flex:1; background:var(--panel2); border:1px solid var(--line); color:var(--txt); border-radius:9px; padding:8px 12px; font-size:12.5px; outline:none; }
+  .row input:focus { border-color:var(--acc); }
+  .row .note { font-size:11px; color:var(--txt2); }
+  .btn-mini { background:#fff; border:1px solid var(--line); color:var(--txt); font-size:12px; padding:7px 14px; border-radius:8px; cursor:pointer; box-shadow:0 1px 2px rgba(16,24,40,.05); }
+  .btn-mini:hover { border-color:var(--acc); color:var(--acc2); }
+  .model { display:flex; align-items:center; gap:12px; padding:10px 12px; border:1px solid var(--line); border-radius:11px; margin-bottom:9px; }
+  .model .mi { width:34px; height:34px; border-radius:9px; background:var(--panel2); display:flex; align-items:center; justify-content:center; font-size:16px; flex-shrink:0; }
+  .model .mt { flex:1; }
+  .model .mt b { font-size:12.5px; }
+  .model .mt .d { font-size:10.5px; color:var(--txt2); margin-top:2px; }
+  .dl-state { font-size:11px; font-weight:700; }
+  .dl-state.ok { color:var(--green); } .dl-state.no { color:var(--txt2); font-weight:500; }
+  .chip2 { display:inline-block; background:var(--panel2); color:var(--txt2); font-size:11px; border-radius:6px; padding:2px 9px; margin:0 6px 6px 0; }
+
+  table.stg { width:100%; border-collapse:collapse; font-size:12px; }
+  table.stg th { color:var(--txt2); text-align:left; padding:4px 8px 8px; font-weight:600; }
+  table.stg td { border-top:1px solid var(--line); padding:7px 8px; }
+
+  .toast { position:fixed; bottom:18px; left:50%; transform:translateX(-50%); background:var(--txt); color:#fff; font-size:12px; border-radius:9px; padding:8px 16px; opacity:0; transition:opacity .25s; pointer-events:none; z-index:99; }
+  .toast.on { opacity:.92; }
+</style>
+</head>
+<body>
+
+<aside class="sidebar">
+  <div class="logo"><span class="gem">🐕</span>DGO<span class="tag">M3</span></div>
+  <div class="nav on" data-page="tasks" onclick="switchPage('tasks')">⬇ 任务队列 <span class="cnt" id="q-cnt">0</span></div>
+  <div class="nav" data-page="rss" onclick="switchPage('rss')">📡 订阅 <span class="cnt" id="s-cnt">0</span></div>
+  <div class="nav" data-page="lib" onclick="switchPage('lib')">📚 媒体库 <span class="cnt" id="l-cnt">0</span></div>
+  <div class="nav" data-page="strategy" onclick="switchPage('strategy')">🛡 风控策略</div>
+  <div class="nav" data-page="settings" onclick="switchPage('settings')">⚙ 设置</div>
+  <div class="side-foot">
+    <div id="loginBadge" class="act" onclick="openLogin()">🔑 登录 B 站</div>
+    <div>🛡 风控规则 <span class="act" onclick="refreshRules()" id="rulesVer">自动更新</span></div>
+    <div>⟳ <span class="act" onclick="checkUpd()">检查引擎更新</span> <span id="updBadge" onclick="doUpdate()">可更新!</span></div>
+    <div><b>本地运行 · 隐私安全</b></div>
+  </div>
+</aside>
+
+<main class="main">
+  <!-- 任务页 -->
+  <div class="page on" id="page-tasks">
+    <div class="paste-box">
+      <span>🔗</span>
+      <textarea id="urls" rows="2" placeholder="粘贴视频 / 图片链接（B站、YouTube、Pixiv、X、Instagram…每行一个），自动识别并加入下载队列"></textarea>
+      <button class="btn-dl" id="btnAdd" onclick="addUrls()">＋ 加入队列</button>
+    </div>
+    <div class="opts">
+      <span class="pick" id="pickSubs" onclick="togglePick('pickSubs')"><span class="box">✓</span>⬇ 带字幕 <span class="n">自动抓中文字幕</span></span>
+      <span class="pick" id="pickAudio" onclick="togglePick('pickAudio')"><span class="box">✓</span>🎧 仅音频 <span class="n">转 mp3，体积小</span></span>
+      <span class="pick" id="pickTrans" onclick="togglePick('pickTrans')"><span class="box">✓</span>📝 转写 <span class="n">下载完出文字稿</span></span>
+    </div>
+    <div class="hint">支持多行同时粘贴 · 视频→yt-dlp（最高 1080P，游客）· 图文→gallery-dl · UP 主动态页会抓取全部图片和视频 · B 站音视频由 ffmpeg 自动合并</div>
+
+    <div class="sec-t">⬇️ 任务队列 <span class="cnt" id="q-cnt2">0</span></div>
+    <div id="queue"><div class="empty">队列空空如也——贴个链接试试，比如 B 站视频或 UP 主主页</div></div>
+
+    <div class="sec-t">✅ 已完成 / 失败 <span class="cnt" id="d-cnt">0</span> <span class="x" style="margin-left:auto;cursor:pointer;font-size:12px" onclick="clearFinishedTasks()" title="清空全部已完/失败记录（不删磁盘文件）">🧹 清空记录</span></div>
+    <div id="doneList"><div class="empty">下载完成的媒体会出现在这里（UP 主删除源视频不影响已下载文件）</div></div>
+  </div>
+
+  <!-- 订阅页 -->
+  <div class="page" id="page-rss">
+    <div class="paste-box">
+      <span>📡</span>
+      <input id="subUrl" placeholder="粘贴主页链接：B站UP主 / YouTube频道 / X用户 / Pixiv·微博·Danbooru·Reddit·Instagram 等图站用户页，更新即自动下载" style="flex:1;border:none;outline:none;font:inherit;font-size:13.5px;background:transparent;color:var(--txt)">
+      <button class="btn-dl" onclick="addSub()">＋ 添加订阅</button>
+    </div>
+    <div class="hint">每 10 分钟自动增量检查（轻量单次请求，不触发风控）· 添加后会询问是否回溯全部历史 · 新内容自动入队 · <b>UP 主删除源视频不会删除你已下载的文件</b></div>
+    <div class="sec-t">📡 我的订阅 <span class="cnt" id="s-cnt2">0</span> <span class="act" style="cursor:pointer;font-size:11px;margin-left:auto" onclick="checkAllSubs()">⟳ 立即检查</span></div>
+    <div id="subList"><div class="empty">还没有订阅——支持 B站UP主 / YouTube频道 / X用户 / Pixiv / 微博 / Reddit / Instagram / Danbooru 等站点主页</div></div>
+  </div>
+
+  <!-- 媒体库页 -->
+  <div class="page" id="page-lib">
+    <div class="hint" style="margin:0 2px 12px">按 <b>站点 / UP主</b> 聚合的本地媒体索引 · 只读展示，<b>任何情况下都不会自动删除你的文件</b> · 点击卡片展开文件列表</div>
+    <div class="paste-box" style="margin:0 2px 12px">
+      <span>🔍</span>
+      <input id="libKw" placeholder="搜索 UP主 / 站点 / 文件名…" style="flex:1;border:none;outline:none;font:inherit;font-size:13.5px;background:transparent;color:var(--txt)" oninput="setLibKw(this.value)">
+      <span class="act" id="libKwClear" style="display:none;cursor:pointer;font-size:11px" onclick="setLibKw('');$('libKw').value=''">✕ 清除</span>
+    </div>
+    <div class="sec-t">📚 已收藏媒体 <span class="cnt" id="l-sum">0 个文件</span> <span class="act" style="cursor:pointer;font-size:11px;margin-left:auto" onclick="loadLibrary(true)">⟳ 重新扫描</span></div>
+    <div id="libList"><div class="empty">还没有下载任何媒体——去任务队列贴个链接吧</div></div>
+  </div>
+
+  <!-- 策略页 -->
+  <div class="page" id="page-strategy">
+    <div class="hint" style="margin:0 2px 12px">各站点的风控参数与自适应状态 · 优先级 <b>远程规则 &gt; 运行时学习 &gt; 内置默认</b> · 启动及每 6 小时自动拉取线上规则</div>
+    <div class="sec-t">🛡 远程规则 <span class="cnt" id="st-version">…</span> <span class="act" style="cursor:pointer;font-size:11px;margin-left:auto" onclick="refreshRules();loadStrategySoon()">⟳ 立即更新</span></div>
+    <div id="strategyList"></div>
+    <div class="sec-t">📈 运行时自适应 <span class="cnt" id="st-learned">0</span></div>
+    <div id="learnedList"><div class="empty">还没积累到学习数据——风控退避/熔断发生后这里会出现各站状态</div></div>
+  </div>
+
+  <!-- 设置页 -->
+  <div class="page" id="page-settings">
+    <div class="card">
+      <h3>⚙ 下载设置</h3>
+      <div class="desc">媒体统一保存到以下目录，按「站点 / UP主」分文件夹</div>
+      <div class="row">
+        <label>下载保存目录</label>
+        <input id="outDirInput" readonly>
+        <button class="btn-mini" onclick="pickOutDir()">更改目录</button>
+      </div>
+      <div class="desc" style="margin-bottom:0">默认在系统应用数据目录（C 盘）；C 盘空间紧张建议改到 D 盘 · 切换后新任务立即生效，运行中任务不受影响</div>
+    </div>
+
+    <div class="card">
+      <h3>🔑 Cookie 管理 <span class="rec">多站点通用</span></h3>
+      <div class="desc">B 站登录后自动写入。其他站点（YouTube / Pixiv / X / Instagram…）可用浏览器扩展 <b>Get cookies.txt LOCALLY</b> 登录后导出 Netscape 格式 cookies.txt，在此导入——下载时会自动带上对应站点的登录态（更高清晰度、更少风控）。Cookie 只存本机。</div>
+      <div class="row">
+        <label>已保存站点</label>
+        <div id="cookieDomains" style="flex:1"><span class="chip2">（暂无，B 站登录后自动出现 bilibili.com）</span></div>
+      </div>
+      <div class="row" style="margin-bottom:0">
+        <label></label>
+        <button class="btn-mini" onclick="importCookies()">📥 导入 cookies.txt</button>
+        <button class="btn-mini" onclick="openCookieDir()">📂 打开文件位置</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>📝 本地转写（Whisper）<span class="rec">推荐 Turbo</span></h3>
+      <div class="desc">下载转写模型到本机，<b>音频不会上传任何服务器</b>，模型下载后完全离线可用 · 下载任务勾「📝 转写」或媒体库点 📝 即可生成带时间戳的字幕（SRT）和文字稿（TXT）</div>
+      <div id="asrModelList"><div class="empty">加载中…</div></div>
+      <div class="row" style="margin:12px 0 0">
+        <label>模型下载源</label>
+        <select id="asrMirror" onchange="switchMirror()"></select>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>🌐 网络代理</h3>
+      <div class="desc">下载 YouTube / X / Instagram 等需要科学上网的站点时，填入本机代理地址（Clash 默认 <b>http://127.0.0.1:7890</b>；v2RayN 默认 <b>socks5://127.0.0.1:10808</b>）。B 站等国内站点不需要。留空 = 不用代理。</div>
+      <div class="row" style="margin-bottom:0">
+        <label>代理地址</label>
+        <input id="proxyInput" type="text" placeholder="http://127.0.0.1:7890" style="flex:1">
+        <button class="btn-mini" onclick="saveProxy()">💾 保存</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>🔔 通知与常驻</h3>
+      <div class="row">
+        <label>下载完成通知</label>
+        <input type="checkbox" id="notifyChk" onchange="saveNotify()">
+        <span class="note">窗口最小化/在托盘时才会弹，前台时不打扰</span>
+      </div>
+      <div class="row" style="margin-bottom:0">
+        <label>通知方式</label>
+        <select id="notifyModeSel" onchange="saveNotify()" style="max-width:260px">
+          <option value="each">每个任务完成即通知</option>
+          <option value="batch">全部下载完成后统一通知</option>
+        </select>
+      </div>
+      <div class="desc" style="margin:12px 0 0">· 关闭窗口 = 最小化到系统托盘，订阅检查与下载<b>继续运行</b><br>· 托盘图标右键可「显示」或「退出」；双击托盘图标回到主窗口<br>· 已防重复启动：再次双击桌面图标会唤出主窗口</div>
+    </div>
+
+    <div class="card">
+      <h3>✨ AI 文稿助理 <span class="rec">BYOK 自备 Key</span></h3>
+      <div class="desc">对已转写的文字稿跑 <b>AI 摘要 / 翻译</b>。填任意 <b>OpenAI 兼容接口</b>（OpenAI / DeepSeek / 硅基流动 / Ollama / LM Studio 均可）。Key 只存本机 settings.json，不经任何第三方。媒体库文件点 ✨ 即可使用，结果存为同名 <code>.ai.md</code>。</div>
+      <div class="row">
+        <label>接口地址</label>
+        <input id="aiUrl" type="text" placeholder="https://api.deepseek.com/v1（Ollama: http://127.0.0.1:11434/v1）" style="flex:1">
+      </div>
+      <div class="row">
+        <label>API Key</label>
+        <input id="aiKey" type="password" placeholder="sk-..." style="flex:1">
+        <input id="aiModel" type="text" placeholder="模型名，如 deepseek-chat" style="flex:1">
+      </div>
+      <div class="row" style="margin-bottom:0">
+        <label></label>
+        <button class="btn-mini" onclick="saveAiConfig()">💾 保存</button>
+        <span id="aiCfgState" style="font-size:12px;color:var(--txt2)"></span>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>⬆️ 软件更新 <span class="cnt" id="appVer" style="font-size:11px"></span></h3>
+      <div class="desc">手动点「检查更新」；新版发布后每天启动时也会自动提醒（任务队列空闲时才装，不会打断下载）。更新源是一个 JSON 地址，格式：<code>{"version":"0.2.0","url":"新版安装包下载地址"}</code></div>
+      <div class="row">
+        <label>更新源 URL</label>
+        <input id="updateUrlInput" type="text" placeholder="https://example.com/dgo/update.json" style="flex:1">
+        <button class="btn-mini" onclick="saveUpdateUrl()">💾 保存</button>
+      </div>
+      <div class="row" style="margin-bottom:0">
+        <label></label>
+        <button class="btn-mini" style="color:var(--acc2)" onclick="checkAppUpdate()">🔄 检查更新</button>
+        <span id="appUpdateResult" style="font-size:12px;color:var(--txt2)"></span>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>🛠 下载引擎 <span class="cnt" style="font-size:11px">yt-dlp · gallery-dl</span></h3>
+      <div class="desc">上游社区每天都在更新风控对抗规则，引擎保持最新 = 下载成功率最高。默认<b>每天自动更新</b>（仅在下载队列空闲时进行，不打断任务）。</div>
+      <div id="engineList"><div class="empty">检查中…</div></div>
+      <div class="row" style="margin-bottom:0">
+        <label>自动更新</label>
+        <input type="checkbox" id="engineAutoChk" onchange="saveEngineAuto(this.checked)">
+        <button class="btn-mini" style="color:var(--acc2)" onclick="checkEngines()">🔄 立即检查</button>
+        <button class="btn-mini" onclick="pickLocalEngine()">📥 从本地文件安装</button>
+      </div>
+    </div>
+  </div>
+</main>
+
+<div class="toast" id="toast"></div>
+
+<div id="modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:99;align-items:center;justify-content:center" onclick="if(event.target===this)closeModal()">
+  <div style="background:var(--card,#fff);color:var(--txt,#222);border-radius:14px;padding:18px;width:560px;max-width:92vw;max-height:82vh;overflow:auto;box-shadow:0 18px 50px rgba(0,0,0,.25)">
+    <div id="modalTitle" style="font-weight:700;margin-bottom:10px;font-size:15px"></div>
+    <div id="modalBody"></div>
+    <div style="text-align:right;margin-top:12px"><button class="btn-mini" onclick="closeModal()">关闭</button></div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+let items = [];
+
+function toast(msg) {
+  const t = $('toast'); t.textContent = msg; t.classList.add('on');
+  clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove('on'), 2600);
+}
+
+// 错误翻译层（会审 P0/P1）：把引擎的工程师语言翻译成用户能懂的行动建议；原文悬停可见
+function translateError(e) {
+  const s = String(e || '');
+  if (/412|-352|请求过于频繁|Precondition/i.test(s)) return 'B 站风控限流中：稍等几分钟会自动重试，或到左下角扫码登录后再试';
+  if (/\b403\b/.test(s)) return '站点拒绝访问：可能需要登录（左下角扫码）或链接已失效';
+  if (/\b429\b|Too Many Requests|rate.?limit/i.test(s)) return '请求太快被限流：稍后会自动重试';
+  if (/timeout|timed out|ETIMEDOUT|ECONNRESET|网络/i.test(s)) return '网络超时：点任务上的 ⟳ 重试一下';
+  if (/404|not found|不存在|Unable to download|Unsupported URL/i.test(s)) return '链接失效或暂不支持：确认链接能在这台设备的浏览器里打开';
+  if (/private|members-only|付费|登录.*观看/i.test(s)) return '该内容需要登录或会员：左下角扫码登录后再试';
+  if (/ENOENT|no such file/i.test(s)) return '文件或目录出了问题：检查设置里的下载目录是否可用';
+  if (/HTTP Error 5\d\d/i.test(s)) return '站点服务器开小差了：稍后点 ⟳ 重试';
+  return s.length > 80 ? s.slice(0, 80) + '…' : s;
+}
+
+// ===== pick 胶囊选项（v0.6 纯胶囊：状态即 .on class；旧双元素模式引用了不存在的 checkbox id，曾致顶层脚本崩溃）=====
+const PICKS = [['pickSubs','subs'],['pickAudio','audio'],['pickTrans','trans']];
+function togglePick(pickId) {
+  $(pickId).classList.toggle('on');
+  saveOpts();
+}
+function syncPicks() {
+  let saved = {};
+  try { saved = JSON.parse(localStorage.getItem('dgo-opts') || '{}'); } catch (e) {}
+  for (const [pickId, key] of PICKS) $(pickId).classList.toggle('on', !!saved[key]);
+}
+function currentOpts() {
+  const o = {};
+  for (const [pickId, key] of PICKS) o[key] = $(pickId).classList.contains('on');
+  return o;
+}
+function saveOpts() { localStorage.setItem('dgo-opts', JSON.stringify(currentOpts())); }
+// localStorage key 迁移：fetchie-opts → dgo-opts，兼容读旧值（会审 P2）
+try {
+  const old = localStorage.getItem('fetchie-opts');
+  if (old && !localStorage.getItem('dgo-opts')) localStorage.setItem('dgo-opts', old);
+  localStorage.removeItem('fetchie-opts');
+} catch (e) {}
+try { syncPicks(); } catch (e) { console.warn('syncPicks fail:', e.message); }   // 顶层初始化防再犯：崩了也不能断掉后续绑定
+
+let _adding = false;
+async function addUrls() {
+  if (_adding) return;   // 防连点重复入队（会审 P0 修复）
+  const urls = $('urls').value.split('\n').map(s => s.trim()).filter(Boolean);
+  if (!urls.length) return toast('先粘贴至少一个链接哦');
+  _adding = true;
+  const btn = document.getElementById('btnAdd');
+  if (btn) { btn.disabled = true; btn.textContent = '识别中…'; }
+  try {
+    $('urls').value = '';
+    const opts = currentOpts();
+    const r = await window.fetchie.addTasks(urls, opts);
+    const n = (r && r.added ? r.added.length : 0);
+    const dup = (r && r.duplicates ? r.duplicates.length : 0);
+    const inv = (r && r.invalid ? r.invalid.length : 0);
+    let msg = '已加入队列 ' + n + ' 个任务' + (opts.audio ? '（仅音频）' : '') + (opts.subs ? '（带字幕）' : '') + (opts.trans ? '（自动转写）' : '');
+    if (dup) msg += '；' + dup + ' 个已在队列中，已跳过';
+    if (inv) msg += '；' + inv + ' 个链接无法识别，未加入';
+    toast(msg);
+  } catch (err) {
+    toast('加入队列失败：' + (err && err.message ? err.message : '未知错误'));
+  } finally {
+    _adding = false;
+    if (btn) { btn.disabled = false; btn.textContent = '＋ 加入队列'; }
+  }
+}
+
+const engIcon = e => e === 'yt-dlp' ? '🎥' : e === 'gallery-dl' ? '🖼️' : '❓';
+const engName = e => e === 'yt-dlp' ? '视频' : e === 'gallery-dl' ? '图文' : '识别中';
+const stName = { queued:'排队中', downloading:'下载中', held:'风控冷却', done:'完成', error:'失败', canceled:'已取消' };
+const heldMin = ms => Math.max(1, Math.ceil(ms/60000));
+
+function render() {
+  const active = items.filter(i => ['queued','downloading','held'].includes(i.status));
+  const done = items.filter(i => ['done'].includes(i.status));
+  const failed = items.filter(i => ['error','canceled'].includes(i.status));
+  $('q-cnt').textContent = active.length;
+  $('q-cnt2').textContent = active.length;
+  $('d-cnt').textContent = done.length;
+
+  // —— 分组渲染：按主页名称（订阅名/UP主）聚合，组头箭头展开收起（主人需求）——
+  const groupOf = t => {
+    const m = (t.title || '').match(/^\[(?:订阅回溯|订阅)\]\s*(.+?)\s*·/);
+    if (m) return m[1];
+    if (t.uploader) return t.uploader;
+    return '粘贴的任务';
+  };
+  const groupTasks = list => {
+    const map = new Map();
+    for (const t of list) {
+      const g = groupOf(t);
+      if (!map.has(g)) map.set(g, []);
+      map.get(g).push(t);
+    }
+    return [...map.entries()];   // [ [组名, 任务[]], ... ]
+  };
+
+  const activeCard = t => {
+    const heldNote = t.status === 'held' ? `<span style="color:#a16207">⛔ 站点风控冷却，约 ${heldMin(t.heldRemainMs||0)} 分钟后自动重试</span>` : '';
+    return `
+    <div class="task">
+      <div class="t-thumb">${engIcon(t.engine)}<span class="eng">${engName(t.engine)}</span></div>
+      <div class="t-info">
+        <div class="name">${esc(t.title)}</div>
+        <div class="meta"><span>${stName[t.status]} ${t.progress ? '· ' + t.progress.toFixed(0) + '%' : ''}</span>${t.fileCount ? `<span>已收 ${t.fileCount} 个文件</span>` : ''}${t._audio ? '<span>🎧 音频</span>' : ''}${t._subs ? '<span>⬇ 字幕</span>' : ''}${t._transcribe ? `<span>📝 ${asrStatus(t) || '待转写'}</span>` : ''}${heldNote}</div>
+        <div class="bar"><i style="width:${t.status==='held'||t.status==='queued'?2:t.progress}%"></i></div>
+      </div>
+      <div class="x" onclick="cancel('${t.id}')" title="取消">✕</div>
+    </div>`;
+  };
+  const doneCard = t => {
+    if (t.filePath) _filePathMap.set(t.id, t.filePath);   // 路径经 map 查表，不走 onclick 内联（反斜杠转义地狱）
+    return `
+    <div class="task">
+      <div class="t-thumb">${engIcon(t.engine)}<span class="eng">${engName(t.engine)}</span></div>
+      <div class="t-info">
+        <div class="name">${esc(t.title)}</div>
+        <div class="meta" title="${t.error ? esc(t.error) : ''}">${t.error ? esc(translateError(t.error)) : (t.filePath ? esc(t.filePath) : '')}</div>
+      </div>
+      ${t.filePath ? `<div class="x" onclick="openFileFolderById('${t.id}')" title="打开文件位置">📂</div>` : ''}
+      <div class="x" onclick="retryTask('${t.id}')" title="重试">⟳</div>
+      <div class="x" onclick="removeTask('${t.id}')" title="删除记录（不删磁盘文件）">🗑</div>
+      <div class="st ${t.status}">${stName[t.status]}</div>
+    </div>`;
+  };
+  // 组折叠块：组头（主页名 + 状态统计 + 箭头），展开显示任务卡
+  const groupBlock = ([g, ts], kind) => {
+    const open = _openGroups.has(kind + '|' + g);
+    const dl = ts.filter(t => t.status === 'downloading').length;
+    const qd = ts.filter(t => t.status === 'queued' || t.status === 'held').length;
+    const ok = ts.filter(t => t.status === 'done').length;
+    const bad = ts.filter(t => ['error','canceled'].includes(t.status)).length;
+    const stat = kind === 'active'
+      ? `${dl ? `下载中 ${dl} · ` : ''}${qd ? `排队 ${qd}` : ''}`.replace(/ · $/, '')
+      : `${ok ? `完成 ${ok}` : ''}${ok && bad ? ' · ' : ''}${bad ? `失败 ${bad}` : ''}`.replace(/ · $/, '');
+    // 组头 📂：取组内第一个已知 filePath 的所在文件夹（同一 UP 的图/视频都在同一目录）
+    const withPath = ts.find(t => t.filePath);
+    const dir = withPath ? withPath.filePath.replace(/[\\/][^\\/]+$/, '') : null;
+    if (dir) _groupDirMap.set(kind + '|' + g, dir);
+    return `
+    <div class="task" style="cursor:pointer;${open ? 'border-color:var(--acc);background:var(--accbg)' : ''}" onclick="toggleTaskGroup('${kind}','${escAttr(g)}')">
+      <div class="t-thumb">${kind === 'active' ? '⏬' : '📁'}</div>
+      <div class="t-info">
+        <div class="name">${esc(g)}</div>
+        <div class="meta">${ts.length} 个任务${stat ? ' · ' + stat : ''}${kind === 'active' && dl ? '<span class="st downloading" style="margin-left:6px">下载中▸</span>' : ''}</div>
+      </div>
+      ${dir ? `<div class="x" onclick="event.stopPropagation();openGroupFolder('${kind}','${escAttr(g)}')" title="打开该主页的下载文件夹">📂</div>` : ''}
+      <div class="st ${open ? 'downloading' : 'queued'}">${open ? '收起 ▲' : '展开 ▼'}</div>
+    </div>
+    ${open ? `<div style="margin:0 0 8px 28px">${(kind === 'active' ? ts.map(activeCard) : ts.map(doneCard)).join('')}</div>` : ''}`;
+  };
+  $('queue').innerHTML = active.length ? groupTasks(active).map(e => groupBlock(e, 'active')).join('')
+    : `<div class="empty">队列空空如也——贴个链接试试，比如 B 站视频或 UP 主主页</div>`;
+  const doneAll = done.concat(failed);
+  $('doneList').innerHTML = doneAll.length ? groupTasks(doneAll).map(e => groupBlock(e, 'done')).join('')
+    : `<div class="empty">下载完成的媒体会出现在这里</div>`;
+}
+
+// 展开的分组（key = 区分 active/done 前缀 + 组名），点箭头切换
+const _openGroups = new Set();
+// 组名 → 下载文件夹（组头 📂 查表，避免路径内联转义问题）
+const _groupDirMap = new Map();
+function toggleTaskGroup(kind, g) {
+  const k = kind + '|' + g;
+  if (_openGroups.has(k)) _openGroups.delete(k); else _openGroups.add(k);
+  render();
+}
+function openGroupFolder(kind, g) {
+  const dir = _groupDirMap.get(kind + '|' + g);
+  if (!dir) return toast('该组还没有已下载的文件');
+  openFileFolder(dir);   // openFolder IPC 对目录直接打开资源管理器
+}
+
+// 任务 id → filePath 查表（id 是 [a-z0-9] 安全字符）。直接把路径内联进 onclick 会被 JS 字符串
+// 转义吃掉反斜杠（D:\Downloads → D:Downloads），白名单校验必拒——「只允许打开下载目录内的路径」真凶
+const _filePathMap = new Map();
+function openFileFolderById(id) {
+  const p = _filePathMap.get(id);
+  if (!p) return toast('找不到该任务的文件路径');
+  openFileFolder(p);
+}
+function openFileFolder(p) { window.fetchie.openFolder(p).then(r => { if (r && !r.ok) toast(r.reason || '打开失败'); }); }
+
+async function removeTask(id) {
+  if (!confirm('删除这条任务记录？\n（只清除列表记录，磁盘上的文件不会被删除）')) return;
+  await window.fetchie.removeTask(id);
+  _filePathMap.delete(id);
+}
+async function clearFinishedTasks() {
+  const n = await window.fetchie.clearFinished();
+  toast(n ? `已清空 ${n} 条记录（磁盘文件保留）` : '没有可清空的记录');
+}
+
+function esc(s) { return String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+// ===== 转写状态 =====
+const asrStates = {};
+function asrStatus(t) {
+  const s = asrStates[t.filePath];
+  if (!s) return '';
+  if (s.state === 'running') return '转写中 ' + s.pct + '%';
+  if (s.state === 'done') return '转写完成';
+  if (s.state === 'error') return '转写失败';
+  return '';
+}
+window.fetchie.onAsrProgress(d => {
+  asrStates[d.filePath] = { state: 'running', pct: d.pct };
+  if (document.getElementById('page-lib').classList.contains('on')) loadLibrary(true);
+});
+window.fetchie.onAsrDone(d => {
+  asrStates[d.filePath] = { state: 'done' };
+  toast('转写完成 ✓ 已生成 SRT 字幕和文字稿');
+  if (document.getElementById('page-lib').classList.contains('on')) loadLibrary(true);
+});
+window.fetchie.onAsrError(d => {
+  asrStates[d.filePath] = { state: 'error', reason: d.reason };
+  toast('转写失败：' + (d.reason || '').slice(0, 80));
+  if (document.getElementById('page-lib').classList.contains('on')) loadLibrary(true);
+});
+
+// ===== 模型目录 =====
+async function loadAsr() {
+  const r = await window.fetchie.asrModels();
+  window._asrData = r;
+  const active = r.activeModel;
+  $('asrModelList').innerHTML = r.models.map(m => {
+    const prog = window._asrProg && window._asrProg[m.id] !== undefined && window._asrProg[m.id] < 100;
+    const isActive = m.downloaded && active === m.id;
+    return `
+    <div class="model">
+      <div class="mi">${isActive ? '🟢' : m.downloaded ? '✅' : '📦'}</div>
+      <div class="mt">
+        <b>${esc(m.label)}</b>${m.rec ? '<span class="rec">推荐</span>' : ''}
+        <div class="d">${prog ? '下载中 ' + window._asrProg[m.id] + '%' : (m.downloaded ? (isActive ? '使用中 · 转写将用此模型' : '已下载 · 完全离线可用') : '未下载 · 下载后即离线可用')}</div>
+        ${prog ? '<div class="bar"><i style="width:' + window._asrProg[m.id] + '%"></i></div>' : ''}
+      </div>
+      ${isActive ? '<span class="dl-state ok">使用中</span>'
+        : m.downloaded ? `<span class="btn-mini" style="color:var(--acc2)" onclick="setActiveModel('${m.id}')">设为默认</span>`
+        : prog ? '' : `<span class="btn-mini" style="color:var(--acc2)" onclick="dlModel('${m.id}')">⬇ 下载</span>`}
+    </div>`;
+  }).join('');
+}
+async function setActiveModel(id) {
+  const r = await window.fetchie.asrSetModel(id);
+  if (!r.ok) return toast('切换失败：' + (r.reason || ''));
+  toast('已设为默认转写模型 ✓');
+  loadAsr();
+}
+async function dlModel(id) {
+  toast('开始下载模型…（完成后自动可用）');
+  window._asrProg = window._asrProg || {};
+  try {
+    await window.fetchie.asrDownload(id);
+    window._asrProg[id] = 100;
+    toast('模型下载完成 ✓');
+    loadAsr();
+  } catch (e) { toast('下载失败：' + e.message); loadAsr(); }
+}
+window.fetchie.onAsrDownloadProgress(d => {
+  window._asrProg = window._asrProg || {};
+  window._asrProg[d.id] = d.pct;
+  if (document.getElementById('page-settings').classList.contains('on') && d.pct % 5 === 0) loadAsr();
+});
+async function initMirrorSelect() {
+  const r = window._asrData || await window.fetchie.asrModels();
+  const sel = $('asrMirror');
+  if (sel.options.length) return;
+  for (const m of r.mirrors) {
+    const o = document.createElement('option');
+    o.value = m.id; o.textContent = m.label;
+    sel.appendChild(o);
+  }
+}
+async function switchMirror() {
+  await window.fetchie.asrSetMirror($('asrMirror').value);
+  toast('已切换模型下载源');
+}
+
+async function cancel(id) { await window.fetchie.cancel(id); }
+async function retryTask(id) { await window.fetchie.retry(id); }
+
+// ===== 页面切换 =====
+function switchPage(p) {
+  document.querySelectorAll('.nav').forEach(n => n.classList.toggle('on', n.dataset.page === p));
+  document.querySelectorAll('.page').forEach(n => n.classList.toggle('on', n.id === 'page-' + p));
+  if (p === 'rss') loadSubs();
+  // 每次进媒体库都强制重扫磁盘：文件夹里手动删/加了文件也要如实反映（本地扫描快，分片异步不卡 UI）
+  if (p === 'lib') { libDirty = false; loadLibrary(true); }
+  if (p === 'strategy') loadStrategy();
+  if (p === 'settings') { loadSettings(); loadCookieInfo(); loadAsr().then(initMirrorSelect).catch(() => {}); loadEngines(); }
+}
+
+// ===== 设置：下载目录 =====
+async function loadSettings() {
+  const s = await window.fetchie.settingsGet();
+  $('outDirInput').value = s.outDir;
+  $('proxyInput').value = s.proxy || '';
+  $('updateUrlInput').value = s.updateUrl || '';
+  $('notifyChk').checked = s.notifyDone !== false;
+  $('notifyModeSel').value = s.notifyMode === 'batch' ? 'batch' : 'each';
+  loadAiConfig();
+  $('engineAutoChk').checked = s.engineAutoUpdate !== false;
+  $('appVer').textContent = '当前 ' + await window.fetchie.appVersion();
+}
+async function saveUpdateUrl() {
+  await window.fetchie.setUpdateUrl($('updateUrlInput').value.trim());
+  toast('更新源已保存');
+}
+async function checkAppUpdate() {
+  const el = $('appUpdateResult');
+  el.textContent = '检查中…';
+  const r = await window.fetchie.appCheckUpdate();
+  if (!r.ok) { el.textContent = r.reason; return; }
+  if (!r.hasUpdate) { el.textContent = `已是最新（${r.current}）`; return; }
+  window._pendingAppUpdate = { url: r.url, sha256: r.sha256 || '' };   // 签名清单的哈希，安装前核对
+  // 更新内容（notes 在签名清单内，防篡改）+ 两条升级路径：GitHub 手动下载（推荐，私有仓库期软件内下载可能 404）/ 软件内直接安装
+  const notesHtml = r.notes ? `<div class="hint" style="margin:6px 0 8px;line-height:1.7">${esc(r.notes).replace(/\n/g, '<br>')}</div>` : '';
+  el.innerHTML = `发现新版本 <b>${r.version}</b>（当前 ${r.current}）${notesHtml}
+    <span class="btn-mini" style="color:var(--acc2)" onclick="openSrc('${escAttr(r.page || 'https://github.com/guanyafei00/DGO/releases')}')" title="打开 GitHub 发布页，手动下载安装包">🔗 去 GitHub 下载</span>
+    <span class="btn-mini" style="color:var(--txt2)" onclick="applyAppUpdate()" title="软件内下载并静默安装（私有仓库期可能因无登录态失败）">⬇ 软件内安装</span>`;
+}
+async function applyAppUpdate() {
+  const u = window._pendingAppUpdate;
+  if (!u || !u.url) return toast('请先检查更新');
+  if (!confirm('下载新版本并静默安装？\n安装时 DGO 会自动退出，完成后重新打开即可。')) return;
+  toast('正在下载新版本…（几百 MB，请稍候）');
+  const r = await window.fetchie.appApplyUpdate(u.url, u.sha256);
+  if (!r.ok) return toast('更新失败：' + (r.reason || ''));
+  toast('安装已启动，DGO 即将退出…重新打开就是新版本');
+}
+// ===== 引擎更新 =====
+async function loadEngines() {
+  try {
+    const list = await window.fetchie.checkUpdate();
+    $('engineList').innerHTML = list.map(u => `
+      <div class="model">
+        <div class="mi">${u.needUpdate ? '⬆️' : '✅'}</div>
+        <div class="mt"><b>${u.engine.replace('.exe', '')}</b>
+          <div class="d">${u.needUpdate ? `本地 ${u.local || '?'} → 最新 ${u.remote}` : `已是最新（${u.local || u.remote || '?'}）`}</div>
+        </div>
+        ${u.needUpdate ? `<span class="btn-mini" style="color:var(--acc2)" onclick="applyEngineUpdate('${u.engine}','${escAttr(u.url)}')">⬇ 更新</span>` : '<span class="dl-state ok">最新</span>'}
+      </div>`).join('');
+  } catch (e) { $('engineList').innerHTML = `<div class="empty">检查失败（网络原因）</div>`; }
+}
+async function checkEngines() { toast('检查引擎版本中…'); loadEngines(); }
+async function pickLocalEngine() {
+  const n = prompt('输入要安装的引擎文件名（如 gallery-dl.exe / ffmpeg.exe）：', 'gallery-dl.exe');
+  if (!n) return;
+  toast('选择文件后自动安装…');
+  const r = await window.fetchie.pickLocalEngine(n.trim());
+  if (!r.ok) return toast('安装失败：' + (r.reason || ''));
+  toast('引擎已安装 ✓ ' + (r.dest || ''));
+  loadEngines();
+}
+async function applyEngineUpdate(engine, url) {
+  toast('下载新引擎中…（约 20~30MB）');
+  const r = await window.fetchie.applyUpdate(engine, url);
+  if (!r.ok) return toast('引擎更新失败：' + (r.reason || r));
+  toast(`引擎已更新到 ${r.newVersion} ✓`);
+  loadEngines();
+}
+async function saveEngineAuto(on) {
+  await window.fetchie.setEngineAuto(on);
+  toast(on ? '已开启引擎每日自动更新' : '已关闭引擎自动更新');
+}
+window.fetchie.onToast(d => toast(d.msg));
+async function saveProxy() {
+  const r = await window.fetchie.settingsSetProxy($('proxyInput').value);
+  if (!r.ok) return toast(r.reason);
+  toast(r.proxy ? '代理已保存 ✓ 新任务立即生效' : '代理已清除');
+}
+async function saveNotify() {
+  await window.fetchie.setNotify({ on: $('notifyChk').checked, mode: $('notifyModeSel').value });
+  toast($('notifyChk').checked ? ($('notifyModeSel').value === 'batch' ? '已设为：全部完成后统一通知' : '已设为：每个任务完成即通知') : '已关闭下载完成通知');
+}
+async function pickOutDir() {
+  const r = await window.fetchie.settingsPickDir();
+  if (!r.ok) { if (r.reason !== '已取消') toast('更改失败：' + r.reason); return; }
+  $('outDirInput').value = r.outDir;
+  toast('下载目录已更新 ✓ 新任务将保存到新位置');
+}
+
+// ===== Cookie 管理 =====
+async function loadCookieInfo() {
+  try {
+    const r = await window.fetchie.cookieInfo();
+    $('cookieDomains').innerHTML = r.domains.length
+      ? r.domains.map(d => `<span class="chip2">🌐 ${esc(d)}</span>`).join('')
+      : '<span class="chip2">（暂无，B 站登录后自动出现 bilibili.com）</span>';
+  } catch (e) {}
+}
+async function importCookies() {
+  const r = await window.fetchie.cookieImport();
+  if (!r.ok) { if (r.reason !== '已取消') toast('导入失败：' + r.reason); return; }
+  toast('Cookie 导入成功 ✓ 共 ' + r.count + ' 条');
+  loadCookieInfo();
+}
+async function openCookieDir() {
+  const r = await window.fetchie.cookieOpenDir();
+  if (r && !r.ok) toast('打开失败：' + r.reason);
+}
+
+// ===== 订阅 =====
+let subsItems = [];
+let _goneFilesMap = {};   // subId -> { goneId: [本地文件路径...] }
+async function loadSubs() {
+  subsItems = await window.fetchie.subsList();
+  const el = $('subList');
+  $('s-cnt').textContent = subsItems.length;
+  $('s-cnt2').textContent = subsItems.length;
+  const htmls = [];
+  for (const s of subsItems) {
+    const ago = s.lastCheck ? Math.round((Date.now() - s.lastCheck) / 60000) : null;
+    if (s.sourceDeleted) {
+      try { const r = await window.fetchie.subsGoneFiles(s.id); _goneFilesMap[s.id] = (r && r.files) || {}; } catch (e) {}
+    }
+    htmls.push(`
+    <div class="task">
+      <div class="t-thumb">📡<span class="eng">${s.kind === 'bilibili' ? 'B站' : s.kind === 'x' ? 'X' : s.kind === 'youtube' ? 'YouTube' : s.kind === 'gdl' ? '图站' : '订阅'}</span></div>
+      <div class="t-info">
+        <div class="name">${esc(s.name)} ${s.paused ? '<span style="color:var(--red);font-size:11px">（已暂停：连续检查失败）</span>' : ''}</div>
+        <div class="meta">${ago === null ? '尚未检查' : ago + ' 分钟前检查过'} · 已跟踪 ${s.knownCount} 条${s.lastNew ? ` · 上轮新增 ${s.lastNew}` : ''}${s.autoBackfill ? ' · <span style="color:var(--green)">⤓ 自动全量下载中</span>' : ''}${s.kw && s.kw.length ? ' · 🏷 ' + esc(s.kw.join('/')) : ''}${goneBadge(s)}</div>
+      </div>
+      <div class="x" onclick="checkSub('${s.id}')" title="立即检查">⟳</div>
+      <div class="x" onclick="backfillSub('${s.id}')" title="把 TA 已发布的内容全部加入下载队列">⤓</div>
+      <div class="x" onclick="openSubFolder('${s.id}')" title="打开下载文件夹">📂</div>
+      <div class="x" onclick="editKw('${s.id}')" title="关键词过滤：只自动下载含关键词的内容">🏷</div>
+      ${s.paused ? `<div class="x" onclick="resumeSub('${s.id}')" title="恢复检查" style="color:var(--green)">▶</div>` : ''}
+      <div class="x" onclick="removeSub('${s.id}')" title="取消订阅">✕</div>
+    </div>`);
+  }
+  el.innerHTML = htmls.length ? htmls.join('') : `<div class="empty">还没有订阅——支持 B站UP主 / YouTube频道 / X用户 / Pixiv / 微博 / Reddit / Instagram / Danbooru 等站点主页</div>`;
+}
+
+// 删帖回链：B站 opus/视频、YouTube 视频、X 推文（从文件名前缀提推文 id，尽力而为）、gdl 型退订阅主页
+function goneLinkUrl(s, id) {
+  if (s.kind === 'bilibili') return /^\d+$/.test(id) ? `https://www.bilibili.com/opus/${id}` : `https://www.bilibili.com/video/${id}`;
+  if (s.kind === 'youtube') return `https://www.youtube.com/watch?v=${id}`;
+  if (s.kind === 'x') { const m = /^(\d{5,})/.exec(String(id)); return m ? `https://x.com/i/web/status/${m[1]}` : (s.url || ''); }
+  return s.url || '';   // gdl 型：文件名无稳定回链，退订阅主页
+}
+// 源头已删除明细：可展开，逐条链回源 + 对应本地文件（gallery-dl 用动态 id 命名、BV 号在视频名里，能搜到）
+function goneBadge(s) {
+  const gone = s.gone || [];
+  if (!s.sourceDeleted) return '';
+  const fmap = _goneFilesMap[s.id] || {};
+  const items = gone.map(id => {
+    const url = goneLinkUrl(s, id);
+    let html = url ? `<a href="#" onclick="openSrc('${escAttr(url)}');return false">${esc(id)}</a>` : esc(id);
+    const local = fmap[id] || [];
+    if (local.length) {
+      html += ` — <a href="#" onclick="locateGoneFile('${s.id}','${escAttr(id)}');return false" style="color:var(--green)">📁 本地文件</a>`;
+    }
+    return `<li>${html}</li>`;
+  }).join('');
+  return ` · <details style="display:inline"><summary style="display:inline;cursor:pointer;color:var(--red)">⚠ 源头已删除 ${s.sourceDeleted} 条（本地文件保留）</summary><ul style="margin:6px 0 0 16px;font-size:12px">${items || '<li>明细将在下轮检查后同步</li>'}</ul></details>`;
+}
+function locateGoneFile(subId, gid) {
+  const f = (_goneFilesMap[subId] || {})[gid];
+  if (f && f.length) window.fetchie.openFolder(f[0]);
+  else toast('未找到对应本地文件');
+}
+
+// ===== 通用弹窗 =====
+function openModal(title, bodyHtml) {
+  $('modalTitle').textContent = title;
+  $('modalBody').innerHTML = bodyHtml;
+  $('modal').style.display = 'flex';
+}
+function closeModal() { $('modal').style.display = 'none'; }
+
+// ===== 订阅关键词过滤 =====
+function editKw(id) {
+  const s = subsItems.find(x => x.id === id); if (!s) return;
+  openModal('🏷 关键词过滤 · ' + s.name, `
+    <div style="font-size:12.5px;color:var(--txt2,#888);margin-bottom:8px">多个关键词用逗号或空格分隔；<b>留空 = 全部下载</b>。新内容的标题/文件名含任一关键词才会自动下载（跟踪计数照常更新）。</div>
+    <input id="kwInput" value="${esc((s.kw || []).join(', '))}" style="width:100%;box-sizing:border-box;padding:9px 11px;border:1px solid var(--line,#ddd);border-radius:9px;font:inherit;font-size:13.5px;background:transparent;color:var(--txt,#222)">
+    <div style="text-align:right;margin-top:10px"><button class="btn-mini" style="color:var(--acc2)" onclick="saveKw('${id}')">💾 保存</button></div>`);
+  setTimeout(() => { const i = $('kwInput'); if (i) i.focus(); }, 60);
+}
+async function saveKw(id) {
+  const r = await window.fetchie.subsSetKw(id, $('kwInput').value);
+  if (!r.ok) return toast(r.reason || '保存失败');
+  closeModal(); toast('关键词过滤已保存 ✓'); loadSubs();
+}
+
+// ===== AI 文稿助理 =====
+async function loadAiConfig() {
+  try {
+    const c = await window.fetchie.aiGetConfig();
+    $('aiUrl').value = c.url || ''; $('aiKey').value = c.key || ''; $('aiModel').value = c.model || '';
+    $('aiCfgState').textContent = c.ready ? '✓ 已就绪' : '未配置';
+  } catch (e) {}
+}
+async function saveAiConfig() {
+  const r = await window.fetchie.aiSaveConfig({ url: $('aiUrl').value, key: $('aiKey').value, model: $('aiModel').value });
+  $('aiCfgState').textContent = r.ready ? '✓ 已就绪' : '未配置完整';
+  toast(r.ready ? 'AI 配置已保存 ✓' : '已保存（信息不完整，暂不可用）');
+}
+let _aiBusy = false;
+function aiPanel(p) {
+  const fname = p.split(/[\\/]/).pop();
+  openModal('✨ AI 文稿助理 · ' + esc(fname), `
+    <div style="font-size:12.5px;color:var(--txt2,#888);margin-bottom:10px">对该文件的文字稿（TXT）运行 AI，结果保存为同名 <code>.ai.md</code> 并可复制。长文稿约需一两分钟。</div>
+    <div style="display:flex;gap:8px;margin-bottom:10px">
+      <button class="btn-mini" style="color:var(--acc2)" onclick="aiRun('${escAttr(p)}','summary')">📋 摘要要点</button>
+      <button class="btn-mini" style="color:var(--acc2)" onclick="aiRun('${escAttr(p)}','translate')">🌐 翻译成中文</button>
+    </div>
+    <div id="aiOut" style="display:none;white-space:pre-wrap;font-size:13px;line-height:1.7;background:rgba(127,127,127,.08);border-radius:9px;padding:12px;max-height:44vh;overflow:auto"></div>`);
+}
+async function aiRun(p, task) {
+  if (_aiBusy) return toast('AI 正在处理中，稍等…');
+  _aiBusy = true;
+  const out = $('aiOut');
+  out.style.display = 'block';
+  out.textContent = 'AI 思考中…';
+  const r = await window.fetchie.aiRun(p, task).catch(e => ({ ok: false, reason: String(e) }));
+  _aiBusy = false;
+  if (!r.ok) { out.textContent = '失败：' + (r.reason || '未知错误'); return; }
+  out.textContent = r.text;
+}
+
+async function openSubFolder(id) {
+  await window.fetchie.subsOpenFolder(id);
+}
+async function addSub() {
+  const url = $('subUrl').value.trim();
+  if (!url) return toast('先粘贴 UP 主页或频道链接');
+  const r = await window.fetchie.subsAdd(url);
+  if (!r.ok) return toast(r.reason);
+  $('subUrl').value = '';
+  toast('订阅成功，正在记录内容清单…');
+  loadSubs();
+  // 自动跑首轮检查（建立基线，之后的更新才会自动下载）
+  try { await window.fetchie.subsCheck(r.sub.id); } catch (e) {}
+  loadSubs();
+  const info = subsItems.find(s => s.id === r.sub.id) || {};
+  // 主人需求：订阅后询问是否立即回溯下载
+  if (confirm(`订阅「${info.name || '成功'}」完成，已记录 ${info.knownCount || 0} 条内容。\n\n要把 TA 已发布的内容现在就全部下载吗？`)) {
+    await backfillSub(r.sub.id);
+  } else {
+    toast('之后 TA 有更新会自动下载；存量想下时点订阅卡片的 ⤓ 按钮');
+  }
+}
+async function removeSub(id) { await window.fetchie.subsRemove(id); loadSubs(); }
+async function resumeSub(id) { await window.fetchie.subsResume(id); toast('已恢复检查'); loadSubs(); }
+async function backfillSub(id) {
+  if (!confirm('把这个订阅已发布的全部内容（视频+图文，含历史）加入下载队列？\n内容多时清单要拉一会儿，入队后按风控策略自动限速慢慢下。')) return;
+  toast('正在拉取内容清单…');
+  try {
+    const r = await window.fetchie.subsBackfill(id);
+    if (!r.ok) return toast(r.reason);
+    if (!r.added && !r.skipped) return toast('未发现可下载的内容（纯文字动态无媒体）');
+    toast(`已入队 ${r.added} 个任务${r.skipped ? `（${r.skipped} 个已在队列跳过）` : ''}，按风控策略自动限速下载`);
+  } catch (e) { toast('回溯失败：' + (e.message || e)); }
+  loadSubs();
+}
+async function checkSub(id) { toast('检查中…'); await window.fetchie.subsCheck(id); loadSubs(); }
+async function checkAllSubs() { toast('检查全部订阅中…'); await window.fetchie.subsCheck(null); loadSubs(); }
+window.fetchie.onSubs(() => { if (document.getElementById('page-rss').classList.contains('on')) loadSubs(); });
+
+// ===== 媒体库 =====
+let libData = null;
+let expandedKey = null;
+let libDirty = false;
+
+const siteIcon = s => s === 'bilibili' ? '📺' : s === 'youtube' ? '▶️' : s === '未分类' ? '📦' : '🌐';
+const timeAgo = ms => {
+  const m = Math.round((Date.now() - ms) / 60000);
+  if (m < 1) return '刚刚';
+  if (m < 60) return m + ' 分钟前';
+  if (m < 1440) return Math.round(m / 60) + ' 小时前';
+  return Math.round(m / 1440) + ' 天前';
+};
+const kindIcon = k => k === 'video' ? '🎥' : k === 'image' ? '🖼️' : '📄';
+
+async function loadLibrary(force) {
+  if (libData && !force) { renderLibrary(); return; }
+  libData = await window.fetchie.libraryScan();
+  renderLibrary();
+}
+
+let libKw = '';
+function setLibKw(v) {
+  libKw = String(v || '').trim();
+  $('libKwClear').style.display = libKw ? 'inline' : 'none';
+  renderLibrary();
+}
+
+function renderLibrary() {
+  const el = $('libList');
+  if (!libData) return;
+  const kw = libKw.toLowerCase();
+  // 关键词过滤：UP主 / 站点 / 任一文件名命中即保留该组
+  const groups = kw ? libData.groups.filter(g =>
+    g.uploader.toLowerCase().includes(kw) || g.site.toLowerCase().includes(kw) ||
+    g.files.some(f => f.name.toLowerCase().includes(kw))) : libData.groups;
+  $('l-cnt').textContent = kw ? `${groups.length}/${libData.groups.length}` : libData.groups.length;
+  $('l-sum').textContent = `${libData.totalFiles} 个文件 · ${fmtBytes(libData.totalSize)}`;
+  if (!libData.groups.length) {
+    el.innerHTML = `<div class="empty">还没有下载任何媒体——去任务队列贴个链接吧</div>`;
+    return;
+  }
+  if (!groups.length) {
+    el.innerHTML = `<div class="empty">没有匹配「${esc(libKw)}」的媒体</div>`;
+    return;
+  }
+  // 会审 B3：大库提示——文件多时引导用搜索定位，避免用户翻几千个文件的卡片
+  const bigNote = !kw && libData.totalFiles > 3000
+    ? `<div class="hint" style="margin:0 2px 10px">📦 媒体文件较多（${libData.totalFiles} 个）：用上方搜索框按 UP主 / 站点 / 文件名 快速定位</div>` : '';
+  el.innerHTML = bigNote + groups.map(g => {
+    const open = g.key === expandedKey;
+    const matched = kw ? g.files.filter(f => f.name.toLowerCase().includes(kw)).length : 0;
+    const kwNote = kw && matched ? ` · <span style="color:var(--acc)">命中 ${matched} 个文件</span>` : '';
+    return `
+    <div class="task" style="cursor:pointer;${open ? 'border-color:var(--acc);background:var(--accbg)' : ''}" onclick="toggleGroup('${escAttr(g.key)}')">
+      <div class="t-thumb" style="font-size:22px">${siteIcon(g.site)}</div>
+      <div class="t-info">
+        <div class="name">${esc(g.uploader)} <span style="font-size:10px;color:var(--txt2);background:var(--panel2);border-radius:5px;padding:1px 6px">${esc(g.site)}</span></div>
+        <div class="meta">${g.fileCount} 个文件（🎥 ${g.videoCount} · 🖼️ ${g.imageCount}）· ${g.sizeText} · 最近更新 ${timeAgo(g.lastMtime)}${kwNote}</div>
+      </div>
+      <div class="x" onclick="event.stopPropagation();openPath('${escAttr(g.files[0] ? g.files[0].path : g.key)}')" title="打开文件夹">📁</div>
+      <div class="st ${open ? 'downloading' : 'queued'}">${open ? '收起 ▲' : '展开 ▼'}</div>
+    </div>${open ? (g.files.length > 200 ? `<div class="hint" style="margin:0 0 6px 44px">该组共 ${g.files.length} 个文件，仅展示最近的 200 个（按发布时间排序）</div>` : '') + `<div style="margin:0 0 6px 44px">${g.files.some(f => /\.(mp4|mkv|webm|mov|avi|flv|m4a|mp3|wav)$/i.test(f.name)) ? `<span class="btn-mini" style="color:var(--acc2)" onclick="transcribeGroup('${escAttr(g.key)}')" title="把组内还没有字幕的音视频全部排队转写（串行处理）">📝 全组转写</span>` : ''}</div>` + g.files.slice(0, 200).map(f => `
+      <div class="task" style="margin:0 0 6px 44px;padding:8px 12px">
+        <div class="t-thumb" style="width:36px;height:28px;font-size:14px">${kindIcon(f.kind)}</div>
+        <div class="t-info">
+          <div class="name" title="${esc(f.path)}">${esc(f.name)}</div>
+          <div class="meta">${f.sizeText} · ${timeAgo(f.mtime)}${asrStates[f.path] ? ' · 📝 ' + (asrStates[f.path].state === 'running' ? '转写中 ' + asrStates[f.path].pct + '%' : asrStates[f.path].state === 'done' ? '已转写' : '转写失败') : ''}${jobStatus(f)}${srcBadge(f)}</div>
+        </div>
+        ${/\.(mp4|mkv|webm|mov|avi|flv|m4a|mp3|wav)$/i.test(f.name) ? `<div class="x" onclick="event.stopPropagation();transcribeFile('${escAttr(f.path)}')" title="本地转写出 SRT 字幕">📝</div><div class="x" onclick="event.stopPropagation();translateFile('${escAttr(f.path)}')" title="生成中英双语字幕（无字幕会先自动转写；需在设置页配置 AI）">🌐</div><div class="x" onclick="event.stopPropagation();burnFile('${escAttr(f.path)}')" title="把字幕硬烧进视频（生成新视频文件）">🎬</div><div class="x" onclick="event.stopPropagation();aiPanel('${escAttr(f.path)}')" title="AI 文稿助理（摘要/翻译）">✨</div>` : ''}
+        <div class="x" onclick="openPath('${escAttr(f.path)}')" title="打开所在文件夹">📁</div>
+        <div class="x" onclick="event.stopPropagation();trashFile('${escAttr(f.path)}')" title="删除（移入回收站，可恢复）" style="color:var(--red)">🗑</div>
+      </div>`).join('') : ''}`;
+  }).join('');
+}
+
+// ===== 阶段一：双语字幕 / 烧字幕状态 =====
+const jobStates = {};
+function jobStatus(f) {
+  const s = jobStates[f.path];
+  if (!s) return '';
+  if (s.state === 'running') return ' · 🌐 ' + (s.note || '处理中');
+  if (s.state === 'done') return ' · 🌐 完成（' + (s.note || '').replace(/^.*[\\/]/, '') + '）';
+  if (s.state === 'error') return ' · 🌐 <span style="color:var(--red)">失败：' + esc((s.note || '').slice(0, 60)) + '</span>';
+  return '';
+}
+window.fetchie.onLibJob(d => {
+  jobStates[d.filePath] = { state: d.state, note: d.note };
+  if (document.getElementById('page-lib').classList.contains('on')) loadLibrary(true);
+});
+function translateFile(p) {
+  window.fetchie.srtTranslate(p).then(r => { if (r && !r.ok) toast(r.reason); else if (r && r.ok) toast('已加入双语字幕队列（串行处理，可继续浏览）'); });
+}
+function burnFile(p) {
+  window.fetchie.srtBurn(p).then(r => { if (r && !r.ok) toast(r.reason); else if (r && r.ok) toast('已加入烧字幕队列（视频重编码较慢，请耐心等待）'); });
+}
+function transcribeGroup(key) {
+  const g = (libData.groups || []).find(x => x.key === key);
+  if (!g) return;
+  const paths = g.files.filter(f => /\.(mp4|mkv|webm|mov|avi|flv|m4a|mp3|wav)$/i.test(f.name)).map(f => f.path);
+  if (!paths.length) return toast('该组没有可转写的音视频');
+  window.fetchie.asrBatch(paths);
+}
+
+// 来源徽标：站点 + 单条/订阅 + 一键打开来源链接（老文件无索引记录 → 不显示，不撒谎）
+function srcBadge(f) {
+  const s = f.src;
+  if (!s || !s.url) return '';
+  const via = s.via === 'sub'
+    ? '<span style="font-size:10px;color:#1d4ed8;background:#eff6ff;border-radius:5px;padding:1px 6px">订阅</span>'
+    : '<span style="font-size:10px;color:var(--txt2);background:var(--panel2);border-radius:5px;padding:1px 6px">单条</span>';
+  return ` · ${via} <a href="#" onclick="openSrc('${escAttr(s.url)}');return false" title="打开来源页面：${escAttr(s.url)}" style="text-decoration:none">🔗 来源</a>`;
+}
+async function openSrc(u) {
+  const r = await window.fetchie.openExternal(u);
+  if (r && !r.ok) toast(r.reason);
+}
+
+function fmtBytes(b) {
+  if (b >= 1 << 30) return (b / (1 << 30)).toFixed(2) + ' GB';
+  if (b >= 1 << 20) return (b / (1 << 20)).toFixed(1) + ' MB';
+  if (b >= 1024) return (b / 1024).toFixed(0) + ' KB';
+  return b + ' B';
+}
+// 会审 DGO-003：补双引号转义（HTML 属性逃逸），单引号/反斜杠转 JS 字符串层
+function escAttr(s) { return String(s ?? '').replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '&quot;'); }
+function toggleGroup(key) { expandedKey = expandedKey === key ? null : key; renderLibrary(); }
+async function openPath(p) {
+  const r = await window.fetchie.openFolder(p);
+  if (r && !r.ok) toast('打开失败：' + r.reason);
+}
+async function trashFile(p) {
+  const name = p.split('\\').pop().split('/').pop();
+  if (!confirm(`把「${name}」移入系统回收站？\n（可在回收站恢复；订阅/任务记录不受影响）`)) return;
+  const r = await window.fetchie.libTrash(p);
+  if (!r.ok) return toast('删除失败：' + (r.reason || ''));
+  toast('已移入回收站');
+  loadLibrary(true);
+}
+async function transcribeFile(p) {
+  toast('已加入转写队列…');
+  const r = await window.fetchie.asrTranscribe(p);
+  if (!r.ok) toast('转写失败：' + r.reason);
+}
+window.fetchie.onLibraryRefresh(() => {
+  libDirty = true;
+  if (document.getElementById('page-lib').classList.contains('on')) { libDirty = false; loadLibrary(true); }
+});
+
+// ===== 策略页 =====
+function loadStrategySoon() { setTimeout(loadStrategy, 1200); }
+
+async function loadStrategy() {
+  try {
+    const [snap, ver] = await Promise.all([window.fetchie.strategySnapshot(), window.fetchie.strategyVersion()]);
+    $('st-version').textContent = ver.version ? `线上 v${ver.version}` : '未拉取到线上版本';
+    $('strategyList').innerHTML = `
+      <div class="task" style="display:block;padding:12px 16px">
+        <table class="stg">
+          <tr><th>站点</th><th>基础间隔</th><th>熔断阈值</th><th>冷却时长</th><th>退避档位</th><th>来源</th></tr>
+          ${snap.defaults.map(d => `
+          <tr>
+            <td style="font-weight:600">${esc(d.host)}${d.note ? `<div style="font-weight:400;font-size:10.5px;color:var(--txt2)">${esc(d.note)}</div>` : ''}</td>
+            <td>${d.sleep}s</td>
+            <td>${d.breakerThreshold} 连败</td>
+            <td>${Math.round(d.breakerCooldownMs / 60000)} 分钟</td>
+            <td style="color:var(--txt2)">${(d.backoffLevels || []).join(' → ')}</td>
+            <td>${d._src === 'remote'
+              ? '<span style="background:var(--greenbg);color:var(--green);border-radius:5px;padding:1px 7px;font-size:10.5px">远程</span>'
+              : '<span style="background:var(--panel2);color:var(--txt2);border-radius:5px;padding:1px 7px;font-size:10.5px">内置</span>'}</td>
+          </tr>`).join('')}
+        </table>
+      </div>`;
+
+    const learned = Object.entries(snap.learned || {}).filter(([k]) => k !== '_hosts');
+    $('st-learned').textContent = learned.length;
+    $('learnedList').innerHTML = learned.length ? learned.map(([host, s]) => {
+      const breakerLeft = s.breakerUntil && Date.now() < s.breakerUntil
+        ? `<span style="color:#a16207">⛔ 熔断冷却中（剩 ${heldMin(s.breakerUntil - Date.now())} 分钟）</span>` : '';
+      return `
+      <div class="task">
+        <div class="t-thumb" style="font-size:18px">${siteIcon(host.includes('bilibili') ? 'bilibili' : host.includes('youtube') ? 'youtube' : '未分类')}</div>
+        <div class="t-info">
+          <div class="name">${esc(host)}</div>
+          <div class="meta">当前档位 ${s.level || 0}（间隔 ${(snap.defaults.find(d => host.includes(d.host))?.backoffLevels || [])[s.level] || '-'}s）· 累计失败 ${s.failures || 0} 次 ${breakerLeft}</div>
+        </div>
+        <div class="st ${s.level ? 'held' : 'done'}">档位 ${s.level || 0}</div>
+      </div>`;}).join('') : `<div class="empty">还没积累到学习数据——风控退避/熔断发生后这里会出现各站状态</div>`;
+  } catch (e) { toast('策略加载失败：' + e.message); }
+}
+
+async function checkUpd() {
+  toast('正在检查引擎更新…');
+  try {
+    const list = await window.fetchie.checkUpdate();
+    const need = list.filter(u => u.needUpdate);
+    if (!need.length) return toast('引擎全部是最新版 ✓');
+    window._updList = need;
+    toast(need.map(u => u.engine + ' ' + u.local + ' → ' + u.remote).join('；'));
+    $('updBadge').style.display = 'inline';
+  } catch (e) { toast('检查失败：' + e.message); }
+}
+async function doUpdate() {
+  const list = window._updList || [];
+  for (const u of list) {
+    toast('正在更新 ' + u.engine + ' …');
+    try {
+      // 会审 B4：applyUpdate 失败返回 {ok:false,reason} 而非抛异常，必须判 r.ok，否则失败也提示成功
+      const r = await window.fetchie.applyUpdate(u.engine, u.url);
+      if (!r || !r.ok) return toast('更新失败：' + ((r && r.reason) || '未知原因'));
+      toast(u.engine + ' 已更新到 ' + u.remote);
+    }
+    catch (e) { return toast('更新失败：' + e.message); }
+  }
+  $('updBadge').style.display = 'none';
+  toast('更新完成，重启应用后生效');
+}
+
+// ===== 风控规则 / B 站登录 =====
+async function refreshRules() {
+  toast('正在更新风控规则…');
+  const r = await window.fetchie.strategyRefresh();
+  if (r.ok) { toast(`风控策略已更新 ✓ ${r.applied}/${r.total} 条规则 · 版本 ${r.version || '未知'}`); $('rulesVer').textContent = 'v' + (r.version || '?'); }
+  else toast('策略更新失败（已沿用现有策略）：' + (r.reason || ''));
+}
+async function refreshLoginBadge() {
+  const s = await window.fetchie.loginState();
+  const b = $('loginBadge');
+  b.textContent = s.loggedIn ? '✅ 已登录 B 站' : '🔑 登录 B 站';
+  b.onclick = s.loggedIn ? logoutBili : openLogin;
+}
+async function openLogin() {
+  toast('已打开登录窗口，用 B 站 App 扫码或直接登录');
+  const r = await window.fetchie.openLogin();
+  if (r.ok) { toast('登录成功！下载走账号通道，更高清也更少风控'); refreshLoginBadge(); }
+  else if (r.reason && r.reason !== '已取消') toast('登录失败：' + r.reason);
+}
+async function logoutBili() {
+  if (!confirm('确定退出 B 站登录吗？退出后部分内容的下载可能受风控限制。')) return;
+  await window.fetchie.logout();
+  refreshLoginBadge();
+  toast('已退出 B 站登录');
+}
+refreshLoginBadge();
+
+window.fetchie.onQueue(snap => { items = snap; render(); });
+window.fetchie.snapshot().then(s => { items = s; render(); });
+
+// 首启引导（会审 P0-5）：只在第一次弹，三步说清核心用法
+try {
+  if (!localStorage.getItem('dgo-onboarded')) {
+    localStorage.setItem('dgo-onboarded', '1');
+    setTimeout(() => toast('欢迎使用 DGO 🐕 ①粘贴视频/图片链接点「加入队列」②文件自动存到设置里的下载目录③关窗会缩到右下角托盘继续下载'), 800);
+  }
+} catch (e) {}
+</script>
+</body>
+</html>

@@ -1,0 +1,91 @@
+{
+  "name": "dgo",
+  "productName": "DGO",
+  "version": "0.1.2",
+  "description": "DGO - Local AI media library - download videos & images from 1000+ sites",
+  "author": "DGO",
+  "license": "UNLICENSED",
+  "private": true,
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win nsis"
+  },
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.workbuddy.dgo",
+    "productName": "DGO",
+    "files": [
+      "main.js",
+      "preload.js",
+      "index.html",
+      "lib/**/*"
+    ],
+    "mac": {
+      "target": "dmg",
+      "category": "public.app-category.utilities",
+      "icon": "resources/app.png",
+      "extraResources": [
+        {
+          "from": "resources/tray.png",
+          "to": "tray.png"
+        },
+        {
+          "from": "resources/app.png",
+          "to": "app.png"
+        },
+        {
+          "from": "../LICENSE",
+          "to": "LICENSE"
+        },
+        {
+          "from": "../THIRD-PARTY-NOTICES.md",
+          "to": "THIRD-PARTY-NOTICES.md"
+        }
+      ]
+    },
+    "win": {
+      "target": "nsis",
+      "icon": "resources/app.ico",
+      "extraResources": [
+        {
+          "from": "resources/bin/yt-dlp.exe",
+          "to": "bin/yt-dlp.exe"
+        },
+        {
+          "from": "resources/bin/bili-probe.exe",
+          "to": "bin/bili-probe.exe"
+        },
+        {
+          "from": "resources/bin/whisper",
+          "to": "bin/whisper"
+        },
+        {
+          "from": "resources/tray.png",
+          "to": "tray.png"
+        },
+        {
+          "from": "resources/app.ico",
+          "to": "app.ico"
+        },
+        {
+          "from": "../LICENSE",
+          "to": "LICENSE"
+        },
+        {
+          "from": "../THIRD-PARTY-NOTICES.md",
+          "to": "THIRD-PARTY-NOTICES.md"
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": "always",
+      "allowElevation": false
+    }
+  }
+}
