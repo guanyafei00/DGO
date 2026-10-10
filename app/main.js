@@ -40,6 +40,9 @@ const RULES_INTERVAL_MS = 6 * 3600 * 1000;  // 远程风控规则 6 小时拉一
 // 默认规则服务端（静态 JSON，随规则变更直接更新线上文件）；FETCHIE_RULES_URL 环境变量可覆盖
 const RULES_URL = process.env.FETCHIE_RULES_URL || 'https://fetchie-rules.app.workbuddy.host/rules.json';
 let _rulesVersion = null;   // 最近一次成功应用的远程规则版本（UI 展示用）
+// 出厂预置更新源（A4 决策 2026-10-10：主人接受「每次发版同步更新线上 update.json」义务）
+// 用户在设置页自己填的 updateUrl 优先于预置值
+const UPDATE_URL_PRESET = '';   // TODO: 发布 v0.1.1 时填入线上 update.json 地址
 
 async function refreshRemoteRules() {
   try {
@@ -481,7 +484,7 @@ app.whenReady().then(() => {
     return 0;
   }
   async function appCheckUpdate() {
-    const updateUrl = settings.get().updateUrl;
+    const updateUrl = settings.get().updateUrl || UPDATE_URL_PRESET;
     if (!updateUrl) return { ok: false, reason: '未配置更新源（设置页填写 updateUrl 后可用）' };
     const j = await autoupdate.getJsonPublic(updateUrl);
     const remote = j.version;
@@ -491,7 +494,7 @@ app.whenReady().then(() => {
     // 会审 DGO-004：验签通过的清单留存在主进程，安装路径只信这份，不信渲染层回传参数
     _verifiedUpdate = { version: remote, url: j.url || '', sha256: j.sha256 || '' };
     const hasUpdate = cmpVer(remote, app.getVersion()) > 0;
-    return { ok: true, hasUpdate, version: remote, current: app.getVersion(), url: j.url || '', notes: j.notes || '', sha256: j.sha256 || '' };
+    return { ok: true, hasUpdate, version: remote, current: app.getVersion(), url: j.url || '', notes: j.notes || '', page: j.page || '', sha256: j.sha256 || '' };
   }
   function toastMsg(msg) {
     if (win && !win.isDestroyed()) win.webContents.send('toast:event', { msg });
@@ -691,7 +694,8 @@ app.whenReady().then(() => {
     if (u.protocol !== 'https:') return { ok: false, reason: '非白名单链接' };
     const ALLOW_HOSTS = ['bilibili.com', 'x.com', 'twitter.com', 'youtube.com', 'pixiv.net', 'weibo.com',
       'danbooru.donmai.us', 'gelbooru.com', 'yande.re', 'konachan.com', 'konachan.net', 'artstation.com',
-      'deviantart.com', 'imgur.com', 'flickr.com', 'tumblr.com', 'reddit.com', 'tiktok.com', 'instagram.com'];
+      'deviantart.com', 'imgur.com', 'flickr.com', 'tumblr.com', 'reddit.com', 'tiktok.com', 'instagram.com',
+      'github.com', 'gist.github.com'];   // github.com：更新弹窗「去 GitHub 下载」用
     const host = u.hostname.toLowerCase();
     const ok = ALLOW_HOSTS.some(h => host === h || host.endsWith('.' + h)) || /^pinterest\.\w+$/.test(host);
     if (!ok) return { ok: false, reason: '非白名单链接' };

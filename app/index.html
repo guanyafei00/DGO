@@ -623,7 +623,11 @@ async function checkAppUpdate() {
   if (!r.ok) { el.textContent = r.reason; return; }
   if (!r.hasUpdate) { el.textContent = `已是最新（${r.current}）`; return; }
   window._pendingAppUpdate = { url: r.url, sha256: r.sha256 || '' };   // 签名清单的哈希，安装前核对
-  el.innerHTML = `发现新版本 <b>${r.version}</b>${r.notes ? ' · ' + esc(r.notes) : ''} <span class="btn-mini" style="color:var(--acc2)" onclick="applyAppUpdate()">⬇ 下载并安装</span>`;
+  // 更新内容（notes 在签名清单内，防篡改）+ 两条升级路径：GitHub 手动下载（推荐，私有仓库期软件内下载可能 404）/ 软件内直接安装
+  const notesHtml = r.notes ? `<div class="hint" style="margin:6px 0 8px;line-height:1.7">${esc(r.notes).replace(/\n/g, '<br>')}</div>` : '';
+  el.innerHTML = `发现新版本 <b>${r.version}</b>（当前 ${r.current}）${notesHtml}
+    <span class="btn-mini" style="color:var(--acc2)" onclick="openSrc('${escAttr(r.page || 'https://github.com/guanyafei00/DGO/releases')}')" title="打开 GitHub 发布页，手动下载安装包">🔗 去 GitHub 下载</span>
+    <span class="btn-mini" style="color:var(--txt2)" onclick="applyAppUpdate()" title="软件内下载并静默安装（私有仓库期可能因无登录态失败）">⬇ 软件内安装</span>`;
 }
 async function applyAppUpdate() {
   const u = window._pendingAppUpdate;
