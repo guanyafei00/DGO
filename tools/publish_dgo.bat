@@ -4,7 +4,7 @@ rem Steps you do in browser first: open https://github.com/new
 rem   Repository name: DGO   Visibility: Public   Do NOT check "Add a README"
 rem ASCII only - cmd.exe decodes this file as GBK
 
-cd /d C:\Users\GG\WorkBuddy\2026-10-04-09-08-25
+cd /d "%~dp0.."
 
 git remote add origin https://github.com/guanyafei00/DGO.git 2>nul
 git remote set-url origin https://github.com/guanyafei00/DGO.git
