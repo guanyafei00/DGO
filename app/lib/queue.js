@@ -8,17 +8,21 @@ const fs = require('fs');
 const strategy = require('./strategy');
 
 let BIN = path.join(__dirname, '..', 'resources', 'bin');
+let ENGINES = null;   // 可写引擎目录（userData/engines）：自更新落这里；spawn 时优先取新版（外部会审 deepseek #9 变体）
 let COOKIE = path.join(__dirname, '..', 'resources', 'cookies.txt');
 let OUTDIR = null;
 let PROXY = null;
 let MIN_FREE_MB = 1000;   // #70①：目标盘剩余空间低于此值任务挂起（0=关闭检测）
 let GDL_CFG = null;   // gallery-dl 配置：stdout/stderr 强制 UTF-8（韩/日/emoji 否则被内部替换成 '???'）
-function configure({ binDir, cookiePath, outDir, proxy, minFreeMB }) {
+function configure({ binDir, cookiePath, outDir, proxy, minFreeMB, enginesDir, watchdogTotalMin, watchdogStallMin }) {
   if (binDir) BIN = binDir;
   if (cookiePath) COOKIE = cookiePath;
   if (outDir) OUTDIR = outDir;
   if (proxy !== undefined) PROXY = proxy || null;   // 空串清除
   if (minFreeMB !== undefined) MIN_FREE_MB = Math.max(0, Number(minFreeMB) || 0);
+  if (enginesDir) ENGINES = enginesDir;
+  if (watchdogTotalMin !== undefined) WATCHDOG_TOTAL_MIN = Math.max(0, Number(watchdogTotalMin) || 0);   // 0=关闭
+  if (watchdogStallMin !== undefined) WATCHDOG_STALL_MIN = Math.max(0, Number(watchdogStallMin) || 0);   // 0=关闭
   try {
     GDL_CFG = path.join(path.dirname(COOKIE), 'gdl-utf8.json');
     fs.writeFileSync(GDL_CFG, JSON.stringify({ output: {
@@ -52,6 +56,15 @@ function killTree(child) {
 }
 
 // #70① 磁盘空间检测：下载目录所在盘剩余 < MIN_FREE_MB 视为不足。
+let WATCHDOG_TOTAL_MIN = 240;   // 下载总时长上限（分钟）：超时杀进程标 error，任务可重试；0=关闭（外部会审 deepseek #1）
+let WATCHDOG_STALL_MIN = 15;    // 连续无输出判定（分钟）：引擎网络挂死防永久占用队列；0=关闭
+
+// 引擎解析：userData/engines 有自更新新版优先，否则用随包 resources/bin
+function pick(name) {
+  if (ENGINES) { const p = path.join(ENGINES, name); if (fs.existsSync(p)) return p; }
+  return path.join(BIN, name);
+}
+
 // statfs 在部分环境不可用时返回 null（= 跳过检测，绝不能因检测失败阻断下载）
 function freeMB() {
   if (!OUTDIR || !MIN_FREE_MB) return null;
@@ -237,6 +250,16 @@ class DownloadQueue {
     }
   }
 
+  // 看门狗判定（独立方法便于单测）：返回 null 或终止原因文本
+  _watchdogReason(it) {
+    const now = Date.now();
+    if (WATCHDOG_TOTAL_MIN > 0 && it._startedAt && now - it._startedAt > WATCHDOG_TOTAL_MIN * 60000)
+      return '下载总时长超 ' + WATCHDOG_TOTAL_MIN + ' 分钟';
+    if (WATCHDOG_STALL_MIN > 0 && it._lastOutput && now - it._lastOutput > WATCHDOG_STALL_MIN * 60000)
+      return '连续 ' + WATCHDOG_STALL_MIN + ' 分钟无输出';
+    return null;
+  }
+
   // 磁盘挂起任务：空间恢复即回队（#70①）
   wakeHeld() {
     if (diskLow()) return;
@@ -255,6 +278,8 @@ class DownloadQueue {
     // 事件晚到时凭 seq 识别并丢弃，绝不误清新一轮的 timer 或把新任务打成 error
     const seq = (it._runSeq = (it._runSeq || 0) + 1);
     it.status = 'downloading';
+    it._startedAt = Date.now();   // 看门狗：总时长基准（恢复的重试任务重新计时）
+    it._lastOutput = Date.now();  // 看门狗：无输出判定基准
     if (!Array.isArray(it._files)) it._files = [];   // 本次尝试产出的文件清单（跨重试累积；重试时引擎会跳过已存在文件）
     this.active++;
     it._wasActive = true;
@@ -283,8 +308,20 @@ class DownloadQueue {
     it._child = child;
 
     // #70① 下载中每 30 秒查一次磁盘：写满前主动挂起（杀进程树防半截文件），空间恢复后在 wakeHeld 回队
+    // 外部会审 deepseek #1：同一定时器顺带跑看门狗——总时长超限/连续无输出即杀进程标 error，防引擎挂死永久占用队列
     it._diskTimer = setInterval(() => {
       if (seq !== it._runSeq || it.status !== 'downloading') { clearInterval(it._diskTimer); it._diskTimer = null; return; }
+      const wdReason = this._watchdogReason(it);
+      if (wdReason) {
+        killTree(child);
+        it.status = 'error';
+        it.error = '看门狗：' + wdReason + '，已自动终止（任务可重试）';
+        this.active = Math.max(0, this.active - 1);
+        it._wasActive = false;
+        clearInterval(it._diskTimer); it._diskTimer = null;
+        this.tick(); this.push();
+        return;
+      }
       if (diskLow()) {
         killTree(child);
         it.status = 'held';
@@ -330,20 +367,20 @@ class DownloadQueue {
   }
 
   buildArgs(it) {
-    const ytdlp = path.join(BIN, exe('yt-dlp'));
-    const gdl = path.join(BIN, exe('gallery-dl'));
+    const ytdlp = pick(exe('yt-dlp'));
+    const gdl = pick(exe('gallery-dl'));
     if (it.engine === 'yt-dlp') {
       // 媒体库物理目录：{站点}/{UP主}/{标题} [id].ext（与 gallery-dl 的 bilibili/{作者}/ 结构对齐）
       const site = /bilibili\.com/i.test(it.url) ? 'bilibili'
         : /youtube\.com|youtu\.be/i.test(it.url) ? 'youtube' : 'other';
       const outTpl = path.join(OUTDIR, site, '%(uploader|Unknown)s', '%(title)s [%(id)s].%(ext)s');
       // ffmpeg 可能尚未就绪（首启在线引导下载中）→ 降级为单文件流，不合并、不抽轨，保住可用性
-      const hasFfmpeg = fs.existsSync(path.join(BIN, exe('ffmpeg')));
+      const hasFfmpeg = fs.existsSync(pick(exe('ffmpeg')));
     const args = [
         '-f', it._audio ? 'bestaudio/best' : (!hasFfmpeg ? 'b' : 'bv*[vcodec^=avc1]+ba[acodec^=mp4a]/bv*+ba/b'),
         '-S', it._audio ? 'abr' : 'res:1080',
         '--merge-output-format', 'mp4',
-        ...(hasFfmpeg ? ['--ffmpeg-location', path.join(BIN, exe('ffmpeg'))] : []),
+        ...(hasFfmpeg ? ['--ffmpeg-location', pick(exe('ffmpeg'))] : []),
         '-o', outTpl,
         '--newline', '--no-playlist', '--windows-filenames',
         '--concurrent-fragments', '4',   // DASH 分段 4 路并行（B站/YouTube 视频皆分段下发），实测提速 2~4 倍
@@ -377,6 +414,7 @@ class DownloadQueue {
   }
 
   parseOutput(it, chunk) {
+    if (it.status === 'downloading') it._lastOutput = Date.now();   // 看门狗：任何输出都算活着的信号
     for (const rawLine of chunk.split(/\r?\n/)) {
       const line = rawLine.trim();
       if (!line) continue;
