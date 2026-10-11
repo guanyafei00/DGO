@@ -23,11 +23,19 @@ function verify(j) {
 }
 
 // 安装包哈希校验（清单里带 sha256 时强制比对；会审 DGO-004：缺失即拒绝，fail-closed）
-function sha256ok(filePath, expect) {
+// 外部会审 deepseek #10：改流式，110MB 安装包不再整包读进内存
+async function sha256ok(filePath, expect) {
   try {
     if (!expect) return false;
-    const h = crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
-    return h.toLowerCase() === String(expect).toLowerCase();
+    const h = crypto.createHash('sha256');
+    const s = fs.createReadStream(filePath);
+    const done = new Promise((resolve, reject) => {
+      s.on('data', d => h.update(d));
+      s.on('error', reject);
+      s.on('end', () => resolve(h.digest('hex')));
+    });
+    const hex = await done;
+    return hex.toLowerCase() === String(expect).toLowerCase();
   } catch (e) { return false; }
 }
 

@@ -285,14 +285,15 @@ app.whenReady().then(() => {
     try { fs.copyFileSync(legacyCookie, cookiePath); } catch (e) {}
   }
 
-  configure({ binDir: binDir(), cookiePath, outDir, proxy: settings.get().proxy, minFreeMB: settings.get().minFreeMB });
+  const enginesDir = path.join(userData, 'engines');   // 可写引擎目录：自更新落这里，spawn 优先取新版（外部会审 deepseek #9 变体）
+  configure({ binDir: binDir(), enginesDir, cookiePath, outDir, proxy: settings.get().proxy, minFreeMB: settings.get().minFreeMB });
   identify.setBinDir(binDir());
   identify.setCookiePath(cookiePath);   // 会审 P1：登录后识别探针也带 cookie（原先断链，登录对识别无效）
   identify.setProxy(settings.get().proxy);
   strategy.configure({ stateFile: path.join(userData, 'site-state.json') });
   refreshRemoteRules();
   setInterval(refreshRemoteRules, RULES_INTERVAL_MS);
-  autoupdate.configure({ binDir: binDir() });
+  autoupdate.configure({ binDir: enginesDir, fallbackBinDir: binDir() });   // 更新写 userData/engines（可写），本地版本探测回退随包目录
   store.configure({ userData });
   subs.configure({ binDir: binDir(), cookiePath, file: path.join(userData, 'subs.json') });
   library.configure({ outDir, sourceGet: p => source.get(p) });
@@ -595,7 +596,7 @@ app.whenReady().then(() => {
     const size = fs.existsSync(inst) ? fs.statSync(inst).size : 0;
     if (size < 10 * 1024 * 1024) { try { fs.unlinkSync(inst); } catch (e2) {} return { ok: false, reason: '安装包异常（' + Math.round(size / 1048576) + 'MB），已取消' }; }
     // 发布闸门③：安装包 sha256 与签名清单核对，不一致即销毁
-    if (!updateSign.sha256ok(inst, mu.sha256)) {
+    if (!(await updateSign.sha256ok(inst, mu.sha256))) {   // 流式版改为 async（外部会审 deepseek #10）
       try { fs.unlinkSync(inst); } catch (e2) {}
       return { ok: false, reason: '安装包哈希校验失败（可能被篡改或下载损坏），已取消安装' };
     }

@@ -5,9 +5,11 @@ const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 const https = require('https');
+const crypto = require('crypto');
 
-let BIN = null;
-function configure({ binDir }) { BIN = binDir; }
+let BIN = null;          // 可写引擎目录（userData/engines）：更新落这里（外部会审 deepseek #9 变体：装到 Program Files 时 resources/bin 只读）
+let FALLBACK_BIN = null; // 随包目录（resources/bin）：本地版本探测的回退位
+function configure({ binDir, fallbackBinDir }) { BIN = binDir; FALLBACK_BIN = fallbackBinDir || null; }
 
 // 通用超时 GET（会审 P2：GitHub 半开连接不再让检查永久挂死）
 function getWithTimeout(url, headers, handler, timeoutMs = 15000) {
@@ -30,6 +32,13 @@ function getJson(url) {
     let d = '';
     res.on('data', c => d += c);
     res.on('end', () => { try { resolve(JSON.parse(d)); } catch (e) { reject(e); } });
+  });
+}
+function getText(url) {
+  return getWithTimeout(url, { 'User-Agent': 'Mozilla/5.0' }, (res, resolve, reject) => {
+    let d = '';
+    res.on('data', c => d += c);
+    res.on('end', () => resolve(d));
   });
 }
 function download(url, dest) {
@@ -75,7 +84,9 @@ async function latestGalleryDl() {
 }
 function localVersion(engine) {
   return new Promise(resolve => {
-    const exe = path.join(BIN, engine);
+    // 主目录优先（自更新新版），回退随包目录（首装未更新时 bundled 版也算本地版本）
+    const exe = fs.existsSync(path.join(BIN, engine)) ? path.join(BIN, engine)
+      : (FALLBACK_BIN && fs.existsSync(path.join(FALLBACK_BIN, engine)) ? path.join(FALLBACK_BIN, engine) : path.join(BIN, engine));
     if (!fs.existsSync(exe)) return resolve(null);
     const child = spawn(exe, ['--version'], { windowsHide: true });
     let out = '';
@@ -97,7 +108,31 @@ async function checkAll() {
   return out;
 }
 
-// 更新单个引擎：下载 temp → 校验 → 备份旧版 → 替换。必须在队列空闲时调用
+// 流式 sha256（外部会审 deepseek #10：大文件不再整包读进内存）
+function sha256File(file) {
+  return new Promise((resolve, reject) => {
+    const h = crypto.createHash('sha256');
+    const s = fs.createReadStream(file);
+    s.on('data', d => h.update(d));
+    s.on('error', reject);
+    s.on('end', () => resolve(h.digest('hex')));
+  });
+}
+// yt-dlp 官方 SHA2-256SUMS 里抽 yt-dlp.exe 行的哈希（无官方哈希的引擎返回 null，调用方降级为仅 allowlist+HTTPS）
+function parseEngineSha(sumsText, engine) {
+  const line = String(sumsText || '').split(/\r?\n/).find(l => l.trim().endsWith(engine));
+  if (!line) return null;
+  const m = /^([0-9a-fA-F]{64})\s+/.exec(line.trim());
+  return m ? m[1].toLowerCase() : null;
+}
+// 从 release 下载 URL 推同 tag 的校验和文件 URL（仅 yt-dlp 官方发布 SHA2-256SUMS）
+function sumsUrlFor(engine, url) {
+  if (engine !== 'yt-dlp.exe') return null;
+  const m = /releases\/download\/([^/]+)\//.exec(url);
+  return m ? 'https://github.com/yt-dlp/yt-dlp/releases/download/' + m[1] + '/SHA2-256SUMS' : null;
+}
+
+// 更新单个引擎：下载 temp → 校验（大小+SHA-256 可得时）→ 备份旧版 → 替换。必须在队列空闲时调用
 async function updateEngine(engine, url) {
   const allowRe = ENGINE_ALLOW[engine];
   if (!allowRe) throw new Error('unknown engine: ' + engine);
@@ -108,6 +143,21 @@ async function updateEngine(engine, url) {
   await download(url, tmp);
   const size = fs.existsSync(tmp) ? fs.statSync(tmp).size : 0;
   if (size < 1_000_000) { try { fs.unlinkSync(tmp); } catch (e) {} throw new Error('downloaded file too small: ' + size); }
+  // SHA-256 校验（外部会审 deepseek #4）：引擎是被 spawn 的可执行文件，官方提供校验和就必须验
+  let hashChecked = false;
+  const sumsUrl = sumsUrlFor(engine, url);
+  if (sumsUrl) {
+    const sumsText = await getText(sumsUrl).catch(() => null);
+    const expect = sumsText ? parseEngineSha(sumsText, engine) : null;
+    if (expect) {
+      const got = await sha256File(tmp);
+      if (got !== expect) {
+        try { fs.unlinkSync(tmp); } catch (e) {}
+        throw new Error('SHA-256 校验失败（期望 ' + expect.slice(0, 12) + '…，实得 ' + got.slice(0, 12) + '…），已丢弃下载');
+      }
+      hashChecked = true;
+    }
+  }
   if (fs.existsSync(exe)) fs.copyFileSync(exe, bak);
   try {
     if (fs.existsSync(exe)) fs.unlinkSync(exe);
@@ -119,7 +169,7 @@ async function updateEngine(engine, url) {
     throw e;
   }
   const v = await localVersion(engine);
-  return { engine, newVersion: v, backup: bak };
+  return { engine, newVersion: v, backup: bak, hashChecked, installDir: BIN };
 }
 
-module.exports = { configure, checkAll, updateEngine, localVersion, getJsonPublic: getJson, downloadPublic: download };
+module.exports = { configure, checkAll, updateEngine, localVersion, getJsonPublic: getJson, downloadPublic: download, sha256File, parseEngineSha, sumsUrlFor };
