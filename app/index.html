@@ -9,8 +9,8 @@
 <style>
   :root {
     --bg:#f5f6f8; --panel:#ffffff; --panel2:#f0f2f5; --line:#e4e7ec; --line-strong:#c3c9d4;
-    --txt:#1c2027; --txt2:#5c6470; --acc:#d97706; --acc2:#b45309; --accbg:#fef3e2;
-    --acc-bright:#f29c2b; --acc-soft:#f7b955; --acc-border:#f2c078;
+    --txt:#1c2027; --txt2:#5c6470; --acc:#0369a1; --acc2:#075985; --accbg:#f0f9ff;
+    --acc-bright:#0ea5e9; --acc-soft:#38bdf8; --acc-border:#bae6fd;
     --green:#15803d; --greenbg:#ecfdf3; --red:#dc2626; --red-strong:#b91c1c; --redbg:#fee2e2;
     --yellow:#a16207; --yellowbg:#fef9c3; --info:#1d4ed8; --infobg:#eff6ff;
     --r:14px; --r-md:10px; --r-sm:6px; --r-xs:5px;
@@ -24,7 +24,7 @@
   /* ===== 侧边栏（原型 v0.6 布局）===== */
   .sidebar { width:200px; background:var(--panel); border-right:1px solid var(--line); padding:14px 10px; display:flex; flex-direction:column; gap:3px; flex-shrink:0; }
   .logo { display:flex; align-items:center; gap:9px; font-weight:800; font-size:14.5px; letter-spacing:.3px; padding:4px 13px 14px; }
-  .logo .gem { width:22px; height:22px; border-radius:7px; background:linear-gradient(135deg,var(--acc-soft),var(--acc)); display:inline-flex; align-items:center; justify-content:center; font-size:12px; color:#fff; }
+  .logo .gem { width:22px; height:22px; border-radius:7px; background:linear-gradient(135deg,var(--acc2),var(--acc-bright)); display:inline-flex; align-items:center; justify-content:center; font-size:12.5px; font-weight:800; color:#fff; }
   .logo .tag { font-size:11px; color:var(--acc2); background:var(--accbg); border-radius:var(--r-xs); padding:2px 7px; font-weight:600; }
   .nav { display:flex; align-items:center; gap:10px; padding:10px 13px; border-radius:var(--r-md); color:var(--txt2); font-size:13.5px; cursor:pointer; user-select:none; transition:.15s; }
   .nav:hover { background:var(--panel2); color:var(--txt); }
@@ -44,10 +44,10 @@
 
   /* ===== 粘贴框 + pick 选项 ===== */
   .paste-box { display:flex; gap:10px; align-items:center; background:var(--panel); border:1.5px solid var(--line); border-radius:var(--r); padding:13px 15px; box-shadow:var(--shadow); transition:.2s; }
-  .paste-box:focus-within { border-color:var(--acc); box-shadow:0 0 0 3px rgba(217,119,6,.1); }
+  .paste-box:focus-within { border-color:var(--acc); box-shadow:0 0 0 3px rgba(3,105,161,.12); }
   .paste-box span { font-size:20px; }
   textarea { flex:1; border:none; outline:none; resize:none; font:inherit; font-size:13.5px; min-height:44px; color:var(--txt); background:transparent; }
-  .btn-dl { background:linear-gradient(135deg,var(--acc-bright),var(--acc)); border:none; color:#fff; font-weight:700; font-size:13px; padding:10px 20px; border-radius:var(--r-md); cursor:pointer; white-space:nowrap; box-shadow:0 4px 12px rgba(217,119,6,.25); }
+  .btn-dl { background:linear-gradient(135deg,var(--acc),var(--acc2)); border:none; color:#fff; font-weight:700; font-size:13px; padding:10px 20px; border-radius:var(--r-md); cursor:pointer; white-space:nowrap; box-shadow:0 4px 12px rgba(3,105,161,.25); }
   .btn-dl:hover { filter:brightness(.96); }
   .btn-dl:disabled { opacity:.55; cursor:not-allowed; filter:none; }
   .hint { font-size:11.5px; color:var(--txt2); margin:8px 2px 0; line-height:1.8; }
@@ -122,7 +122,7 @@
 <body>
 
 <aside class="sidebar">
-  <div class="logo"><span class="gem">🐕</span>DGO<span class="tag">M3</span></div>
+  <div class="logo"><span class="gem">D</span>DGO<span class="tag">M3</span></div>
   <div class="nav on" data-page="tasks" onclick="switchPage('tasks')">⬇ 任务队列 <span class="cnt" id="q-cnt">0</span></div>
   <div class="nav" data-page="rss" onclick="switchPage('rss')">📡 订阅 <span class="cnt" id="s-cnt">0</span></div>
   <div class="nav" data-page="lib" onclick="switchPage('lib')">📚 媒体库 <span class="cnt" id="l-cnt">0</span></div>
