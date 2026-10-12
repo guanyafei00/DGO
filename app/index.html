@@ -8,10 +8,15 @@
 <title>DGO — 媒体下载与订阅</title>
 <style>
   :root {
-    --bg:#f5f6f8; --panel:#ffffff; --panel2:#f0f2f5; --line:#e4e7ec;
-    --txt:#1c2027; --txt2:#7a8191; --acc:#d97706; --acc2:#b45309; --accbg:#fef3e2;
-    --green:#15803d; --greenbg:#ecfdf3; --red:#dc2626;
-    --r:14px; --shadow:0 1px 3px rgba(16,24,40,.06), 0 8px 24px rgba(16,24,40,.05);
+    --bg:#f5f6f8; --panel:#ffffff; --panel2:#f0f2f5; --line:#e4e7ec; --line-strong:#c3c9d4;
+    --txt:#1c2027; --txt2:#5c6470; --acc:#d97706; --acc2:#b45309; --accbg:#fef3e2;
+    --acc-bright:#f29c2b; --acc-soft:#f7b955; --acc-border:#f2c078;
+    --green:#15803d; --greenbg:#ecfdf3; --red:#dc2626; --red-strong:#b91c1c; --redbg:#fee2e2;
+    --yellow:#a16207; --yellowbg:#fef9c3; --info:#1d4ed8; --infobg:#eff6ff;
+    --r:14px; --r-md:10px; --r-sm:6px; --r-xs:5px;
+    --shadow-sm:0 1px 2px rgba(16,24,40,.05);
+    --shadow:0 1px 3px rgba(16,24,40,.06), 0 8px 24px rgba(16,24,40,.05);
+    --shadow-lg:0 18px 50px rgba(16,24,40,.25);
   }
   * { margin:0; padding:0; box-sizing:border-box; }
   body { font-family:"Segoe UI","Microsoft YaHei",system-ui,sans-serif; background:var(--bg); color:var(--txt); height:100dvh; display:flex; overflow:hidden; }
@@ -19,15 +24,15 @@
   /* ===== 侧边栏（原型 v0.6 布局）===== */
   .sidebar { width:200px; background:var(--panel); border-right:1px solid var(--line); padding:14px 10px; display:flex; flex-direction:column; gap:3px; flex-shrink:0; }
   .logo { display:flex; align-items:center; gap:9px; font-weight:800; font-size:14.5px; letter-spacing:.3px; padding:4px 13px 14px; }
-  .logo .gem { width:22px; height:22px; border-radius:7px; background:linear-gradient(135deg,#f7b955,#d97706); display:inline-flex; align-items:center; justify-content:center; font-size:12px; color:#fff; }
-  .logo .tag { font-size:10px; color:var(--acc2); background:var(--accbg); border-radius:5px; padding:2px 7px; font-weight:600; }
-  .nav { display:flex; align-items:center; gap:10px; padding:10px 13px; border-radius:10px; color:var(--txt2); font-size:13.5px; cursor:pointer; user-select:none; transition:.15s; }
+  .logo .gem { width:22px; height:22px; border-radius:7px; background:linear-gradient(135deg,var(--acc-soft),var(--acc)); display:inline-flex; align-items:center; justify-content:center; font-size:12px; color:#fff; }
+  .logo .tag { font-size:11px; color:var(--acc2); background:var(--accbg); border-radius:var(--r-xs); padding:2px 7px; font-weight:600; }
+  .nav { display:flex; align-items:center; gap:10px; padding:10px 13px; border-radius:var(--r-md); color:var(--txt2); font-size:13.5px; cursor:pointer; user-select:none; transition:.15s; }
   .nav:hover { background:var(--panel2); color:var(--txt); }
   .nav.on { background:var(--accbg); color:var(--acc2); font-weight:700; }
-  .nav .cnt { margin-left:auto; background:var(--panel2); color:var(--txt2); font-size:10.5px; font-weight:600; border-radius:9px; padding:1px 7px; }
-  .nav.on .cnt { background:#fff; color:var(--acc2); }
+  .nav .cnt { margin-left:auto; background:var(--panel2); color:var(--txt2); font-size:11px; font-weight:600; border-radius:var(--r-sm); padding:1px 7px; }
+  .nav.on .cnt { background:var(--panel); color:var(--acc2); }
   .side-foot { margin-top:auto; font-size:11.5px; color:var(--txt2); padding:11px 13px; border-top:1px solid var(--line); line-height:2.1; }
-  .side-foot b { color:var(--green); font-size:10.5px; font-weight:600; }
+  .side-foot b { color:var(--green); font-size:11px; font-weight:600; }
   .side-foot .act { cursor:pointer; }
   .side-foot .act:hover { color:var(--acc2); }
   #loginBadge { cursor:pointer; }
@@ -42,68 +47,76 @@
   .paste-box:focus-within { border-color:var(--acc); box-shadow:0 0 0 3px rgba(217,119,6,.1); }
   .paste-box span { font-size:20px; }
   textarea { flex:1; border:none; outline:none; resize:none; font:inherit; font-size:13.5px; min-height:44px; color:var(--txt); background:transparent; }
-  .btn-dl { background:linear-gradient(135deg,#f29c2b,#d97706); border:none; color:#fff; font-weight:700; font-size:13px; padding:10px 20px; border-radius:10px; cursor:pointer; white-space:nowrap; box-shadow:0 4px 12px rgba(217,119,6,.25); }
+  .btn-dl { background:linear-gradient(135deg,var(--acc-bright),var(--acc)); border:none; color:#fff; font-weight:700; font-size:13px; padding:10px 20px; border-radius:var(--r-md); cursor:pointer; white-space:nowrap; box-shadow:0 4px 12px rgba(217,119,6,.25); }
   .btn-dl:hover { filter:brightness(.96); }
+  .btn-dl:disabled { opacity:.55; cursor:not-allowed; filter:none; }
   .hint { font-size:11.5px; color:var(--txt2); margin:8px 2px 0; line-height:1.8; }
   .hint b { color:var(--acc2); font-weight:600; }
 
   .opts { display:flex; gap:9px; margin-top:12px; flex-wrap:wrap; align-items:center; }
-  .pick { display:flex; align-items:center; gap:7px; background:var(--panel); border:1.5px solid var(--line); border-radius:10px; padding:8px 13px; font-size:12.5px; cursor:pointer; user-select:none; transition:.15s; box-shadow:var(--shadow); }
-  .pick.on { border-color:#f2c078; background:var(--accbg); }
-  .pick .box { width:15px; height:15px; border-radius:4.5px; border:1.5px solid #c3c9d4; display:flex; align-items:center; justify-content:center; font-size:10px; color:transparent; transition:.15s; flex-shrink:0; }
+  .pick { display:flex; align-items:center; gap:7px; background:var(--panel); border:1.5px solid var(--line); border-radius:var(--r-md); padding:8px 13px; font-size:12.5px; cursor:pointer; user-select:none; transition:.15s; box-shadow:var(--shadow); }
+  .pick.on { border-color:var(--acc-border); background:var(--accbg); }
+  .pick .box { width:15px; height:15px; border-radius:var(--r-xs); border:1.5px solid var(--line-strong); display:flex; align-items:center; justify-content:center; font-size:10px; color:transparent; transition:.15s; flex-shrink:0; }
   .pick.on .box { background:var(--acc); border-color:var(--acc); color:#fff; font-weight:900; }
   .pick .n { color:var(--txt2); font-size:11px; }
 
   .sec-t { font-size:12px; color:var(--txt2); margin:18px 2px 10px; display:flex; align-items:center; gap:8px; font-weight:600; }
   .sec-t::after { content:""; flex:1; height:1px; background:var(--line); }
-  .sec-t .cnt { background:var(--panel2); border-radius:9px; padding:1px 8px; font-size:11px; }
+  .sec-t .cnt { background:var(--panel2); border-radius:var(--r-sm); padding:1px 8px; font-size:11px; }
 
   .task { display:flex; align-items:center; gap:14px; background:var(--panel); border:1px solid var(--line); border-radius:var(--r); padding:12px 15px; margin-bottom:10px; box-shadow:var(--shadow); }
-  .t-thumb { width:64px; height:40px; border-radius:9px; background:var(--panel2); display:flex; align-items:center; justify-content:center; font-size:17px; flex-shrink:0; position:relative; }
-  .t-thumb .eng { position:absolute; bottom:-5px; right:-5px; font-size:8.5px; background:var(--txt); color:#fff; border-radius:4px; padding:1px 5px; font-weight:600; }
+  .t-thumb { width:64px; height:40px; border-radius:var(--r-md); background:var(--panel2); display:flex; align-items:center; justify-content:center; font-size:17px; flex-shrink:0; position:relative; }
+  .t-thumb .eng { position:absolute; bottom:-5px; right:-5px; font-size:11px; background:var(--txt); color:#fff; border-radius:var(--r-xs); padding:1px 5px; font-weight:600; }
   .t-info { flex:1; min-width:0; }
-  .t-info .name { font-size:13.5px; font-weight:650; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-  .t-info .meta { font-size:11px; color:var(--txt2); margin-top:4px; display:flex; gap:10px; flex-wrap:wrap; }
-  .bar { height:5px; border-radius:3px; background:#eceff3; margin-top:9px; overflow:hidden; }
-  .bar i { display:block; height:100%; background:linear-gradient(90deg,#f29c2b,#f7b955); border-radius:3px; transition:width .3s; }
-  .st { font-size:11px; font-weight:700; padding:4px 11px; border-radius:8px; white-space:nowrap; }
+  .t-info .name { font-size:13.5px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .t-info .meta { font-size:11.5px; color:var(--txt2); margin-top:4px; display:flex; gap:10px; flex-wrap:wrap; }
+  .bar { height:5px; border-radius:var(--r-xs); background:var(--panel2); margin-top:9px; overflow:hidden; }
+  .bar i { display:block; height:100%; background:linear-gradient(90deg,var(--acc-bright),var(--acc-soft)); border-radius:var(--r-xs); transition:width .3s; }
+  .st { font-size:11px; font-weight:700; padding:4px 11px; border-radius:var(--r-md); white-space:nowrap; }
   .st.queued { background:var(--panel2); color:var(--txt2); }
   .st.downloading { background:var(--accbg); color:var(--acc2); }
-  .st.held { background:#fef9c3; color:#a16207; }
+  .st.held { background:var(--yellowbg); color:var(--yellow); }
   .st.done { background:var(--greenbg); color:var(--green); }
-  .st.error, .st.canceled { background:#fee2e2; color:var(--red); }
-  .x { cursor:pointer; color:var(--txt2); font-size:13px; padding:4px 7px; border-radius:6px; }
+  .st.error, .st.canceled { background:var(--redbg); color:var(--red-strong); }
+  .st.flat { background:var(--panel2); color:var(--txt2); }
+  .x { cursor:pointer; color:var(--txt2); font-size:13px; padding:6px 9px; border-radius:var(--r-sm); }
   .x:hover { background:var(--panel2); color:var(--red); }
 
   .empty { text-align:center; color:var(--txt2); font-size:12.5px; padding:26px 0; border:1.5px dashed var(--line); border-radius:var(--r); }
 
   /* ===== 卡片式设置（原型 v0.6）===== */
-  .card { background:var(--panel); border:1px solid var(--line); border-radius:var(--r); padding:17px 19px; margin-bottom:14px; box-shadow:var(--shadow); }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:var(--r); padding:16px 18px; margin-bottom:14px; box-shadow:var(--shadow); }
   .card h3 { font-size:13.5px; margin-bottom:4px; display:flex; align-items:center; gap:8px; }
-  .card h3 .rec { font-size:10px; color:var(--acc2); background:var(--accbg); border-radius:5px; padding:1px 7px; font-weight:700; }
+  .card h3 .rec { font-size:11px; color:var(--acc2); background:var(--accbg); border-radius:var(--r-xs); padding:1px 7px; font-weight:700; }
   .card .desc { font-size:11.5px; color:var(--txt2); margin-bottom:13px; line-height:1.7; }
   .row { display:flex; align-items:center; gap:10px; margin-bottom:10px; }
   .row label { width:128px; font-size:12.5px; color:var(--txt2); flex-shrink:0; }
-  .row input, .row select { flex:1; background:var(--panel2); border:1px solid var(--line); color:var(--txt); border-radius:9px; padding:8px 12px; font-size:12.5px; outline:none; }
+  .row input, .row select { flex:1; background:var(--panel2); border:1px solid var(--line); color:var(--txt); border-radius:var(--r-md); padding:8px 12px; font-size:12.5px; outline:none; }
   .row input:focus { border-color:var(--acc); }
   .row .note { font-size:11px; color:var(--txt2); }
-  .btn-mini { background:#fff; border:1px solid var(--line); color:var(--txt); font-size:12px; padding:7px 14px; border-radius:8px; cursor:pointer; box-shadow:0 1px 2px rgba(16,24,40,.05); }
+  .btn-mini { background:var(--panel); border:1px solid var(--line); color:var(--txt); font-size:12px; padding:7px 14px; border-radius:var(--r-md); cursor:pointer; box-shadow:var(--shadow-sm); font-family:inherit; }
   .btn-mini:hover { border-color:var(--acc); color:var(--acc2); }
-  .model { display:flex; align-items:center; gap:12px; padding:10px 12px; border:1px solid var(--line); border-radius:11px; margin-bottom:9px; }
-  .model .mi { width:34px; height:34px; border-radius:9px; background:var(--panel2); display:flex; align-items:center; justify-content:center; font-size:16px; flex-shrink:0; }
+  .model { display:flex; align-items:center; gap:12px; padding:10px 12px; border:1px solid var(--line); border-radius:var(--r-md); margin-bottom:9px; }
+  .model .mi { width:34px; height:34px; border-radius:var(--r-md); background:var(--panel2); display:flex; align-items:center; justify-content:center; font-size:16px; flex-shrink:0; }
   .model .mt { flex:1; }
   .model .mt b { font-size:12.5px; }
-  .model .mt .d { font-size:10.5px; color:var(--txt2); margin-top:2px; }
+  .model .mt .d { font-size:11px; color:var(--txt2); margin-top:2px; }
   .dl-state { font-size:11px; font-weight:700; }
   .dl-state.ok { color:var(--green); } .dl-state.no { color:var(--txt2); font-weight:500; }
-  .chip2 { display:inline-block; background:var(--panel2); color:var(--txt2); font-size:11px; border-radius:6px; padding:2px 9px; margin:0 6px 6px 0; }
+  .chip2 { display:inline-block; background:var(--panel2); color:var(--txt2); font-size:11px; border-radius:var(--r-sm); padding:2px 9px; margin:0 6px 6px 0; }
 
   table.stg { width:100%; border-collapse:collapse; font-size:12px; }
   table.stg th { color:var(--txt2); text-align:left; padding:4px 8px 8px; font-weight:600; }
   table.stg td { border-top:1px solid var(--line); padding:7px 8px; }
 
-  .toast { position:fixed; bottom:18px; left:50%; transform:translateX(-50%); background:var(--txt); color:#fff; font-size:12px; border-radius:9px; padding:8px 16px; opacity:0; transition:opacity .25s; pointer-events:none; z-index:99; }
+  .toast { position:fixed; bottom:18px; left:50%; transform:translateX(-50%); background:var(--txt); color:#fff; font-size:12px; border-radius:var(--r-md); padding:8px 16px; opacity:0; transition:opacity .25s; pointer-events:none; z-index:200; }
   .toast.on { opacity:.92; }
+
+  /* ===== UI 会审修复：键盘可达性 / 表单一致性 / 数字稳定宽度 ===== */
+  :focus-visible { outline:2px solid var(--acc); outline-offset:2px; }
+  button { font-family:inherit; }
+  input[type="checkbox"] { accent-color:var(--acc); width:15px; height:15px; vertical-align:-2px; }
+  .t-info .meta, .nav .cnt, .sec-t .cnt, .st, table.stg, .dl-state, .chip2 { font-variant-numeric:tabular-nums; }
 </style>
 </head>
 <body>
@@ -153,7 +166,7 @@
       <button class="btn-dl" onclick="addSub()">＋ 添加订阅</button>
     </div>
     <div class="hint">每 10 分钟自动增量检查（轻量单次请求，不触发风控）· 添加后会询问是否回溯全部历史 · 新内容自动入队 · <b>UP 主删除源视频不会删除你已下载的文件</b></div>
-    <div class="sec-t">📡 我的订阅 <span class="cnt" id="s-cnt2">0</span> <select id="groupFilter" onchange="renderSubs()" style="margin-left:auto;font:inherit;font-size:11px;background:var(--panel2);color:var(--txt);border:1px solid var(--line,#ddd);border-radius:6px;padding:2px 6px;outline:none"><option value="">全部分组</option></select> <span class="act" style="cursor:pointer;font-size:11px" onclick="checkAllSubs()">⟳ 立即检查</span></div>
+    <div class="sec-t">📡 我的订阅 <span class="cnt" id="s-cnt2">0</span> <select id="groupFilter" onchange="renderSubs()" style="margin-left:auto;font:inherit;font-size:12px;background:var(--panel2);color:var(--txt);border:1px solid var(--line);border-radius:var(--r-sm);padding:4px 10px;outline:none"><option value="">全部分组</option></select> <span class="act" style="cursor:pointer;font-size:12px" onclick="checkAllSubs()">⟳ 立即检查</span></div>
     <div id="subList"><div class="empty">还没有订阅——支持 B站UP主 / YouTube频道 / X用户 / Pixiv / 微博 / Reddit / Instagram / Danbooru 等站点主页</div></div>
   </div>
 
@@ -163,17 +176,17 @@
     <div class="paste-box" style="margin:0 2px 12px">
       <span>🔍</span>
       <input id="libKw" placeholder="搜索 UP主 / 站点 / 文件名…" style="flex:1;border:none;outline:none;font:inherit;font-size:13.5px;background:transparent;color:var(--txt)" oninput="setLibKw(this.value)">
-      <span class="act" id="libKwClear" style="display:none;cursor:pointer;font-size:11px" onclick="setLibKw('');$('libKw').value=''">✕ 清除</span>
+      <span class="act" id="libKwClear" style="display:none;cursor:pointer;font-size:12px" onclick="setLibKw('');$('libKw').value=''">✕ 清除</span>
     </div>
-    <div class="sec-t">📚 已收藏媒体 <span class="cnt" id="l-sum">0 个文件</span> <span class="act" style="cursor:pointer;font-size:11px;margin-left:auto" onclick="loadLibrary(true)">⟳ 重新扫描</span></div>
+    <div class="sec-t">📚 已收藏媒体 <span class="cnt" id="l-sum">0 个文件</span> <span class="act" style="cursor:pointer;font-size:12px;margin-left:auto" onclick="loadLibrary(true)">⟳ 重新扫描</span></div>
     <div id="libList"><div class="empty">还没有下载任何媒体——去任务队列贴个链接吧</div></div>
   </div>
 
   <!-- 策略页 -->
   <div class="page" id="page-strategy">
     <div class="hint" style="margin:0 2px 12px">各站点的风控参数与自适应状态 · 优先级 <b>远程规则 &gt; 运行时学习 &gt; 内置默认</b> · 启动及每 6 小时自动拉取线上规则</div>
-    <div class="sec-t">🛡 远程规则 <span class="cnt" id="st-version">…</span> <span class="act" style="cursor:pointer;font-size:11px;margin-left:auto" onclick="refreshRules();loadStrategySoon()">⟳ 立即更新</span></div>
-    <div id="strategyList"></div>
+    <div class="sec-t">🛡 远程规则 <span class="cnt" id="st-version">…</span> <span class="act" style="cursor:pointer;font-size:12px;margin-left:auto" onclick="refreshRules();loadStrategySoon()">⟳ 立即更新</span></div>
+    <div id="strategyList"><div class="empty">检查中…</div></div>
     <div class="sec-t">📈 运行时自适应 <span class="cnt" id="st-learned">0</span></div>
     <div id="learnedList"><div class="empty">还没积累到学习数据——风控退避/熔断发生后这里会出现各站状态</div></div>
   </div>
@@ -247,7 +260,7 @@
       <div class="row">
         <label>磁盘保护</label>
         <div style="display:flex;align-items:center;gap:8px;flex:1;max-width:320px">
-          <input id="minFreeInput" type="number" min="0" step="100" style="flex:1;padding:8px 11px;border:1px solid var(--line,#ddd);border-radius:9px;font:inherit;background:transparent;color:var(--txt)">
+          <input id="minFreeInput" type="number" min="0" step="100" style="flex:1;padding:8px 11px;border:1px solid var(--line);border-radius:var(--r-md);font:inherit;background:var(--panel2);color:var(--txt)">
           <span class="note" style="white-space:nowrap">MB 剩余空间</span>
         </div>
         <button class="btn-mini" style="color:var(--acc2)" onclick="saveMinFree()">💾 保存</button>
@@ -314,7 +327,7 @@
 <div class="toast" id="toast"></div>
 
 <div id="modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:99;align-items:center;justify-content:center" onclick="if(event.target===this)closeModal()">
-  <div style="background:var(--card,#fff);color:var(--txt,#222);border-radius:14px;padding:18px;width:560px;max-width:92vw;max-height:82vh;overflow:auto;box-shadow:0 18px 50px rgba(0,0,0,.25)">
+  <div style="background:var(--panel);color:var(--txt);border-radius:var(--r);padding:18px;width:560px;max-width:92vw;max-height:82vh;overflow:auto;box-shadow:var(--shadow-lg)">
     <div id="modalTitle" style="font-weight:700;margin-bottom:10px;font-size:15px"></div>
     <div id="modalBody"></div>
     <div style="text-align:right;margin-top:12px"><button class="btn-mini" onclick="closeModal()">关闭</button></div>
@@ -329,6 +342,20 @@ function toast(msg) {
   const t = $('toast'); t.textContent = msg; t.classList.add('on');
   clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove('on'), 2600);
 }
+
+// UI 会审 P0：键盘可达性——给所有带 onclick 的非按钮元素补 tabindex/role，回车/空格触发
+function a11yEnhance() {
+  document.querySelectorAll('[onclick]:not(button):not(a):not(input):not(select):not(textarea):not([tabindex])')
+    .forEach(el => { el.setAttribute('tabindex', '0'); el.setAttribute('role', 'button'); });
+}
+document.addEventListener('keydown', e => {
+  if ((e.key === 'Enter' || e.key === ' ') && e.target.getAttribute && e.target.getAttribute('role') === 'button' && e.target.tagName !== 'BUTTON') {
+    e.preventDefault(); e.target.click();
+  }
+});
+let _a11yT = null;
+new MutationObserver(() => { clearTimeout(_a11yT); _a11yT = setTimeout(a11yEnhance, 150); }).observe(document.body, { childList: true, subtree: true });
+document.addEventListener('DOMContentLoaded', a11yEnhance);
 
 // 错误翻译层（会审 P0/P1）：把引擎的工程师语言翻译成用户能懂的行动建议；原文悬停可见
 function translateError(e) {
@@ -427,7 +454,7 @@ function render() {
   };
 
   const activeCard = t => {
-    const heldNote = t.status === 'held' ? `<span style="color:#a16207">⛔ 站点风控冷却，约 ${heldMin(t.heldRemainMs||0)} 分钟后自动重试</span>` : '';
+    const heldNote = t.status === 'held' ? `<span style="color:var(--yellow)">⛔ 站点风控冷却，约 ${heldMin(t.heldRemainMs||0)} 分钟后自动重试</span>` : '';
     return `
     <div class="task">
       <div class="t-thumb">${engIcon(t.engine)}<span class="eng">${engName(t.engine)}</span></div>
@@ -476,7 +503,7 @@ function render() {
         <div class="meta">${ts.length} 个任务${stat ? ' · ' + stat : ''}${kind === 'active' && dl ? '<span class="st downloading" style="margin-left:6px">下载中▸</span>' : ''}</div>
       </div>
       ${dir ? `<div class="x" onclick="event.stopPropagation();openGroupFolder('${kind}','${escAttr(g)}')" title="打开该主页的下载文件夹">📂</div>` : ''}
-      <div class="st ${open ? 'downloading' : 'queued'}">${open ? '收起 ▲' : '展开 ▼'}</div>
+      <div class="st flat">${open ? '收起 ▲' : '展开 ▼'}</div>
     </div>
     ${open ? `<div style="margin:0 0 8px 28px">${(kind === 'active' ? ts.map(activeCard) : ts.map(doneCard)).join('')}</div>` : ''}`;
   };
@@ -566,8 +593,8 @@ async function loadAsr() {
         ${prog ? '<div class="bar"><i style="width:' + window._asrProg[m.id] + '%"></i></div>' : ''}
       </div>
       ${isActive ? '<span class="dl-state ok">使用中</span>'
-        : m.downloaded ? `<span class="btn-mini" style="color:var(--acc2)" onclick="setActiveModel('${m.id}')">设为默认</span>`
-        : prog ? '' : `<span class="btn-mini" style="color:var(--acc2)" onclick="dlModel('${m.id}')">⬇ 下载</span>`}
+        : m.downloaded ? `<button type="button" class="btn-mini" style="color:var(--acc2)" onclick="setActiveModel('${m.id}')">设为默认</button>`
+        : prog ? '' : `<button type="button" class="btn-mini" style="color:var(--acc2)" onclick="dlModel('${m.id}')">⬇ 下载</button>`}
     </div>`;
   }).join('');
 }
@@ -665,7 +692,7 @@ async function checkAppUpdate() {
   const notesHtml = r.notes ? `<div class="hint" style="margin:6px 0 8px;line-height:1.7">${esc(r.notes).replace(/\n/g, '<br>')}</div>` : '';
   el.innerHTML = `发现新版本 <b>${r.version}</b>（当前 ${r.current}）${notesHtml}
     <span class="btn-mini" style="color:var(--acc2)" onclick="openSrc('${escAttr(r.page || 'https://github.com/guanyafei00/DGO/releases')}')" title="打开 GitHub 发布页，手动下载安装包">🔗 去 GitHub 下载</span>
-    <span class="btn-mini" style="color:var(--txt2)" onclick="applyAppUpdate()" title="软件内下载并静默安装（私有仓库期可能因无登录态失败）">⬇ 软件内安装</span>`;
+    <button type="button" class="btn-mini" style="color:var(--txt2)" onclick="applyAppUpdate()" title="软件内下载并静默安装（私有仓库期可能因无登录态失败）">⬇ 软件内安装</button>`;
 }
 async function applyAppUpdate() {
   const u = window._pendingAppUpdate;
@@ -686,7 +713,7 @@ async function loadEngines() {
         <div class="mt"><b>${u.engine.replace('.exe', '')}</b>
           <div class="d">${u.needUpdate ? `本地 ${u.local || '?'} → 最新 ${u.remote}` : `已是最新（${u.local || u.remote || '?'}）`}</div>
         </div>
-        ${u.needUpdate ? `<span class="btn-mini" style="color:var(--acc2)" onclick="applyEngineUpdate('${u.engine}','${escAttr(u.url)}')">⬇ 更新</span>` : '<span class="dl-state ok">最新</span>'}
+        ${u.needUpdate ? `<button type="button" class="btn-mini" style="color:var(--acc2)" onclick="applyEngineUpdate('${u.engine}','${escAttr(u.url)}')">⬇ 更新</button>` : '<span class="dl-state ok">最新</span>'}
       </div>`).join('');
   } catch (e) { $('engineList').innerHTML = `<div class="empty">检查失败（网络原因）</div>`; }
 }
@@ -784,17 +811,17 @@ async function renderSubs() {
       }
     }
     const paused = s.userPaused || s.paused;
-    const pausedTag = s.userPaused ? '<span style="color:var(--txt2);font-size:11px">（⏸ 已暂停）</span>'
-      : s.paused ? '<span style="color:var(--red);font-size:11px">（已暂停：连续检查失败）</span>' : '';
-    const groupTag = (s.group || '').trim() ? ` <span style="font-size:10px;color:var(--acc2);background:var(--panel2);border-radius:5px;padding:1px 6px">${esc(s.group)}</span>` : '';
+    const pausedTag = s.userPaused ? '<span class="st flat">⏸ 已暂停</span>'
+      : s.paused ? '<span class="st error">连续失败暂停</span>' : '';
+    const groupTag = (s.group || '').trim() ? ` <span style="font-size:11px;color:var(--acc2);background:var(--panel2);border-radius:var(--r-xs);padding:1px 6px">${esc(s.group)}</span>` : '';
     const freqTag = s.intervalMin ? ` · 检查频率 ${s.intervalMin} 分钟` : '';
-    const atTag = s.autoTranscribe ? ' · <span style="color:var(--green)">📝 自动转写</span>' : '';
+    const atTag = s.autoTranscribe ? ' · <span style="color:var(--acc2)">📝 自动转写</span>' : '';
     htmls.push(`
     <div class="task"${paused ? ' style="opacity:.62"' : ''}>
       <div class="t-thumb">📡<span class="eng">${s.kind === 'bilibili' ? 'B站' : s.kind === 'x' ? 'X' : s.kind === 'youtube' ? 'YouTube' : s.kind === 'gdl' ? '图站' : '订阅'}</span></div>
       <div class="t-info">
-        <div class="name">${esc(s.name)}${groupTag} ${pausedTag}</div>
-        <div class="meta">${ago === null ? '尚未检查' : ago + ' 分钟前检查过'} · 已跟踪 ${s.knownCount} 条${s.lastNew ? ` · 上轮新增 ${s.lastNew}` : ''}${s.autoBackfill ? ' · <span style="color:var(--green)">⤓ 自动全量下载中</span>' : ''}${s.kw && s.kw.length ? ' · 🏷 ' + esc(s.kw.join('/')) : ''}${freqTag}${atTag}${goneBadge(s)}</div>
+        <div class="name">${esc(s.name)}</div>
+        <div class="meta">${groupTag}${pausedTag ? pausedTag + ' · ' : ''}${ago === null ? '尚未检查' : ago + ' 分钟前检查过'} · 已跟踪 ${s.knownCount} 条${s.lastNew ? ` · 上轮新增 ${s.lastNew}` : ''}${s.autoBackfill ? ' · <span style="color:var(--acc2)">⤓ 自动全量下载中</span>' : ''}${s.kw && s.kw.length ? ' · 🏷 ' + esc(s.kw.join('/')) : ''}${freqTag}${atTag}${goneBadge(s)}</div>
       </div>
       <div class="x" onclick="checkSub('${s.id}')" title="立即检查">⟳</div>
       <div class="x" onclick="backfillSub('${s.id}')" title="把 TA 已发布的内容全部加入下载队列">⤓</div>
@@ -817,12 +844,12 @@ function editSubOpts(id) {
       <label style="display:flex;align-items:center;gap:8px;cursor:pointer"><input type="checkbox" id="soPaused" ${s.userPaused ? 'checked' : ''}> ⏸ 暂停此订阅（不自动检查、不自动下载，已下载文件保留）</label>
       <label style="display:flex;align-items:center;gap:8px;cursor:pointer"><input type="checkbox" id="soTranscribe" ${s.autoTranscribe ? 'checked' : ''}> 📝 新下载自动转写（下载完成即后台转写出字幕和文稿）</label>
       <div>
-        <div style="font-size:12.5px;color:var(--txt2,#888);margin-bottom:5px">分组（留空 = 未分组，最多 20 字）</div>
-        <input id="soGroup" value="${escAttr(s.group || '')}" placeholder="如：追更 / 学习 / 保存" style="width:100%;box-sizing:border-box;padding:8px 11px;border:1px solid var(--line,#ddd);border-radius:9px;font:inherit;background:transparent;color:var(--txt,#222)">
+        <div style="font-size:12.5px;color:var(--txt2);margin-bottom:5px">分组（留空 = 未分组，最多 20 字）</div>
+        <input id="soGroup" value="${escAttr(s.group || '')}" placeholder="如：追更 / 学习 / 保存" style="width:100%;box-sizing:border-box;padding:8px 11px;border:1px solid var(--line);border-radius:var(--r-md);font:inherit;background:var(--panel2);color:var(--txt)">
       </div>
       <div>
-        <div style="font-size:12.5px;color:var(--txt2,#888);margin-bottom:5px">检查频率（间隔越长越省请求，防风控更稳）</div>
-        <select id="soInterval" style="width:100%;padding:8px 11px;font:inherit;background:var(--panel2);color:var(--txt);border:1px solid var(--line,#ddd);border-radius:9px;outline:none">
+        <div style="font-size:12.5px;color:var(--txt2);margin-bottom:5px">检查频率（间隔越长越省请求，防风控更稳）</div>
+        <select id="soInterval" style="width:100%;padding:8px 11px;font:inherit;background:var(--panel2);color:var(--txt);border:1px solid var(--line);border-radius:var(--r-md);outline:none">
           <option value="0" ${!s.intervalMin ? 'selected' : ''}>跟随全局（10 分钟）</option>
           <option value="10" ${s.intervalMin === 10 ? 'selected' : ''}>每 10 分钟</option>
           <option value="30" ${s.intervalMin === 30 ? 'selected' : ''}>每 30 分钟</option>
@@ -860,7 +887,7 @@ function goneBadge(s) {
     let html = url ? `<a href="#" onclick="openSrc('${escAttr(url)}');return false">${esc(id)}</a>` : esc(id);
     const local = fmap[id] || [];
     if (local.length) {
-      html += ` — <a href="#" onclick="locateGoneFile('${s.id}','${escAttr(id)}');return false" style="color:var(--green)">📁 本地文件</a>`;
+      html += ` — <a href="#" onclick="locateGoneFile('${s.id}','${escAttr(id)}');return false" style="color:var(--acc2)">📁 本地文件</a>`;
     }
     return `<li>${html}</li>`;
   }).join('');
@@ -884,8 +911,8 @@ function closeModal() { $('modal').style.display = 'none'; }
 function editKw(id) {
   const s = subsItems.find(x => x.id === id); if (!s) return;
   openModal('🏷 关键词过滤 · ' + s.name, `
-    <div style="font-size:12.5px;color:var(--txt2,#888);margin-bottom:8px">多个关键词用逗号或空格分隔；<b>留空 = 全部下载</b>。新内容的标题/文件名含任一关键词才会自动下载（跟踪计数照常更新）。</div>
-    <input id="kwInput" value="${esc((s.kw || []).join(', '))}" style="width:100%;box-sizing:border-box;padding:9px 11px;border:1px solid var(--line,#ddd);border-radius:9px;font:inherit;font-size:13.5px;background:transparent;color:var(--txt,#222)">
+    <div style="font-size:12.5px;color:var(--txt2);margin-bottom:8px">多个关键词用逗号或空格分隔；<b>留空 = 全部下载</b>。新内容的标题/文件名含任一关键词才会自动下载（跟踪计数照常更新）。</div>
+    <input id="kwInput" value="${esc((s.kw || []).join(', '))}" style="width:100%;box-sizing:border-box;padding:9px 11px;border:1px solid var(--line);border-radius:var(--r-md);font:inherit;font-size:13.5px;background:var(--panel2);color:var(--txt)">
     <div style="text-align:right;margin-top:10px"><button class="btn-mini" style="color:var(--acc2)" onclick="saveKw('${id}')">💾 保存</button></div>`);
   setTimeout(() => { const i = $('kwInput'); if (i) i.focus(); }, 60);
 }
@@ -912,7 +939,7 @@ let _aiBusy = false;
 function aiPanel(p) {
   const fname = p.split(/[\\/]/).pop();
   openModal('✨ AI 文稿助理 · ' + esc(fname), `
-    <div style="font-size:12.5px;color:var(--txt2,#888);margin-bottom:10px">对该文件的文字稿（TXT）运行 AI，结果保存为同名 <code>.ai.md</code> 并可复制。长文稿约需一两分钟。</div>
+    <div style="font-size:12.5px;color:var(--txt2);margin-bottom:10px">对该文件的文字稿（TXT）运行 AI，结果保存为同名 <code>.ai.md</code> 并可复制。长文稿约需一两分钟。</div>
     <div style="display:flex;gap:8px;margin-bottom:10px">
       <button class="btn-mini" style="color:var(--acc2)" onclick="aiRun('${escAttr(p)}','summary')">📋 摘要要点</button>
       <button class="btn-mini" style="color:var(--acc2)" onclick="aiRun('${escAttr(p)}','translate')">🌐 翻译成中文</button>
@@ -1038,22 +1065,22 @@ function renderLibrary() {
     const open = g.key === expandedKey;
     const matched = kw ? g.files.filter(f => f.name.toLowerCase().includes(kw)).length : 0;
     const txtMatched = kw ? g.files.filter(f => _txtHits[f.path]).length : 0;
-    const kwNote = (kw && (matched || txtMatched)) ? ` · <span style="color:var(--acc)">命中 ${matched ? matched + ' 个文件' : ''}${matched && txtMatched ? ' + ' : ''}${txtMatched ? txtMatched + ' 篇文稿' : ''}</span>` : '';
+    const kwNote = (kw && (matched || txtMatched)) ? ` · <span style="color:var(--acc2)">命中 ${matched ? matched + ' 个文件' : ''}${matched && txtMatched ? ' + ' : ''}${txtMatched ? txtMatched + ' 篇文稿' : ''}</span>` : '';
     return `
     <div class="task" style="cursor:pointer;${open ? 'border-color:var(--acc);background:var(--accbg)' : ''}" onclick="toggleGroup('${escAttr(g.key)}')">
       <div class="t-thumb" style="font-size:22px">${siteIcon(g.site)}</div>
       <div class="t-info">
-        <div class="name">${esc(g.uploader)} <span style="font-size:10px;color:var(--txt2);background:var(--panel2);border-radius:5px;padding:1px 6px">${esc(g.site)}</span></div>
+        <div class="name">${esc(g.uploader)} <span style="font-size:11px;color:var(--txt2);background:var(--panel2);border-radius:var(--r-xs);padding:1px 6px">${esc(g.site)}</span></div>
         <div class="meta">${g.fileCount} 个文件（🎥 ${g.videoCount} · 🖼️ ${g.imageCount}）· ${g.sizeText} · 最近更新 ${timeAgo(g.lastMtime)}${kwNote}</div>
       </div>
       <div class="x" onclick="event.stopPropagation();openPath('${escAttr(g.files[0] ? g.files[0].path : g.key)}')" title="打开文件夹">📁</div>
-      <div class="st ${open ? 'downloading' : 'queued'}">${open ? '收起 ▲' : '展开 ▼'}</div>
-    </div>${open ? (g.files.length > 200 ? `<div class="hint" style="margin:0 0 6px 44px">该组共 ${g.files.length} 个文件，仅展示最近的 200 个（按发布时间排序）</div>` : '') + `<div style="margin:0 0 6px 44px;display:flex;gap:8px">${g.files.some(f => /\.(mp4|mkv|webm|mov|avi|flv|m4a|mp3|wav)$/i.test(f.name)) ? `<span class="btn-mini" style="color:var(--acc2)" onclick="transcribeGroup('${escAttr(g.key)}')" title="把组内还没有字幕的音视频全部排队转写（串行处理）">📝 全组转写</span>` : ''}<span class="btn-mini" style="color:var(--acc2)" onclick="summarizeGroup('${escAttr(g.key)}')" title="把组内转写文稿交给 AI 做结构化总结（需设置页配置 AI）">✨ AI 摘要</span></div>` + g.files.slice(0, 200).map(f => `
+      <div class="st flat">${open ? '收起 ▲' : '展开 ▼'}</div>
+    </div>${open ? (g.files.length > 200 ? `<div class="hint" style="margin:0 0 6px 44px">该组共 ${g.files.length} 个文件，仅展示最近的 200 个（按发布时间排序）</div>` : '') + `<div style="margin:0 0 6px 44px;display:flex;gap:8px">${g.files.some(f => /\.(mp4|mkv|webm|mov|avi|flv|m4a|mp3|wav)$/i.test(f.name)) ? `<button type="button" class="btn-mini" style="color:var(--acc2)" onclick="transcribeGroup('${escAttr(g.key)}')" title="把组内还没有字幕的音视频全部排队转写（串行处理）">📝 全组转写</button>` : ''}<button type="button" class="btn-mini" style="color:var(--acc2)" onclick="summarizeGroup('${escAttr(g.key)}')" title="把组内转写文稿交给 AI 做结构化总结（需设置页配置 AI）">✨ AI 摘要</button></div>` + g.files.slice(0, 200).map(f => `
       <div class="task" style="margin:0 0 6px 44px;padding:8px 12px">
         <div class="t-thumb" style="width:36px;height:28px;font-size:14px">${kindIcon(f.kind)}</div>
         <div class="t-info">
           <div class="name" title="${esc(f.path)}">${esc(f.name)}</div>
-          <div class="meta">${f.sizeText} · ${timeAgo(f.mtime)}${_txtHits[f.path] ? ' · 📄 <span title="' + escAttr(_txtHits[f.path].snippet || '') + '" style="color:var(--acc)">文稿匹配</span>' : ''}${asrStates[f.path] ? ' · 📝 ' + (asrStates[f.path].state === 'running' ? '转写中 ' + asrStates[f.path].pct + '%' : asrStates[f.path].state === 'done' ? '已转写' : '转写失败') : ''}${jobStatus(f)}${srcBadge(f)}</div>
+          <div class="meta">${f.sizeText} · ${timeAgo(f.mtime)}${_txtHits[f.path] ? ' · 📄 <span title="' + escAttr(_txtHits[f.path].snippet || '') + '" style="color:var(--acc2)">文稿匹配</span>' : ''}${asrStates[f.path] ? ' · 📝 ' + (asrStates[f.path].state === 'running' ? '转写中 ' + asrStates[f.path].pct + '%' : asrStates[f.path].state === 'done' ? '已转写' : '转写失败') : ''}${jobStatus(f)}${srcBadge(f)}</div>
         </div>
         ${/\.(mp4|mkv|webm|mov|avi|flv|m4a|mp3|wav)$/i.test(f.name) ? `<div class="x" onclick="event.stopPropagation();transcribeFile('${escAttr(f.path)}')" title="本地转写出 SRT 字幕">📝</div><div class="x" onclick="event.stopPropagation();translateFile('${escAttr(f.path)}')" title="生成中英双语字幕（无字幕会先自动转写；需在设置页配置 AI）">🌐</div><div class="x" onclick="event.stopPropagation();burnFile('${escAttr(f.path)}')" title="把字幕硬烧进视频（生成新视频文件）">🎬</div><div class="x" onclick="event.stopPropagation();aiPanel('${escAttr(f.path)}')" title="AI 文稿助理（摘要/翻译）">✨</div>` : ''}
         <div class="x" onclick="openPath('${escAttr(f.path)}')" title="打开所在文件夹">📁</div>
@@ -1095,7 +1122,7 @@ async function summarizeGroup(key) {
   const g = (libData.groups || []).find(x => x.key === key);
   if (!g) return;
   openModal('✨ AI 摘要 · ' + esc(g.uploader), `
-    <div style="font-size:12.5px;color:var(--txt2,#888);margin-bottom:10px">正在把组内转写文稿（最多 20 篇）交给 AI 做结构化总结，长内容约需一两分钟…</div>
+    <div style="font-size:12.5px;color:var(--txt2);margin-bottom:10px">正在把组内转写文稿（最多 20 篇）交给 AI 做结构化总结，长内容约需一两分钟…</div>
     <div id="gsumOut" style="white-space:pre-wrap;font-size:13px;line-height:1.7;background:rgba(127,127,127,.08);border-radius:9px;padding:12px;max-height:46vh;overflow:auto">⏳ 生成中…</div>`);
   try {
     // 会审 DGO6-06：文件清单由前端 libData 提供，主进程不再全量重扫媒体库
@@ -1114,8 +1141,8 @@ function srcBadge(f) {
   const s = f.src;
   if (!s || !s.url) return '';
   const via = s.via === 'sub'
-    ? '<span style="font-size:10px;color:#1d4ed8;background:#eff6ff;border-radius:5px;padding:1px 6px">订阅</span>'
-    : '<span style="font-size:10px;color:var(--txt2);background:var(--panel2);border-radius:5px;padding:1px 6px">单条</span>';
+    ? '<span style="font-size:11px;color:var(--info);background:var(--infobg);border-radius:var(--r-xs);padding:1px 6px">订阅</span>'
+    : '<span style="font-size:11px;color:var(--txt2);background:var(--panel2);border-radius:var(--r-xs);padding:1px 6px">单条</span>';
   return ` · ${via} <a href="#" onclick="openSrc('${escAttr(s.url)}');return false" title="打开来源页面：${escAttr(s.url)}" style="text-decoration:none">🔗 来源</a>`;
 }
 async function openSrc(u) {
@@ -1163,27 +1190,29 @@ async function loadStrategy() {
     $('st-version').textContent = ver.version ? `线上 v${ver.version}` : '未拉取到线上版本';
     $('strategyList').innerHTML = `
       <div class="task" style="display:block;padding:12px 16px">
+        <div style="overflow-x:auto">
         <table class="stg">
           <tr><th>站点</th><th>基础间隔</th><th>熔断阈值</th><th>冷却时长</th><th>退避档位</th><th>来源</th></tr>
           ${snap.defaults.map(d => `
           <tr>
-            <td style="font-weight:600">${esc(d.host)}${d.note ? `<div style="font-weight:400;font-size:10.5px;color:var(--txt2)">${esc(d.note)}</div>` : ''}</td>
+            <td style="font-weight:600">${esc(d.host)}${d.note ? `<div style="font-weight:400;font-size:11px;color:var(--txt2)">${esc(d.note)}</div>` : ''}</td>
             <td>${d.sleep}s</td>
             <td>${d.breakerThreshold} 连败</td>
             <td>${Math.round(d.breakerCooldownMs / 60000)} 分钟</td>
             <td style="color:var(--txt2)">${(d.backoffLevels || []).join(' → ')}</td>
             <td>${d._src === 'remote'
-              ? '<span style="background:var(--greenbg);color:var(--green);border-radius:5px;padding:1px 7px;font-size:10.5px">远程</span>'
-              : '<span style="background:var(--panel2);color:var(--txt2);border-radius:5px;padding:1px 7px;font-size:10.5px">内置</span>'}</td>
+              ? '<span style="background:var(--greenbg);color:var(--green);border-radius:var(--r-xs);padding:1px 7px;font-size:11px">远程</span>'
+              : '<span style="background:var(--panel2);color:var(--txt2);border-radius:var(--r-xs);padding:1px 7px;font-size:11px">内置</span>'}</td>
           </tr>`).join('')}
         </table>
+        </div>
       </div>`;
 
     const learned = Object.entries(snap.learned || {}).filter(([k]) => k !== '_hosts');
     $('st-learned').textContent = learned.length;
     $('learnedList').innerHTML = learned.length ? learned.map(([host, s]) => {
       const breakerLeft = s.breakerUntil && Date.now() < s.breakerUntil
-        ? `<span style="color:#a16207">⛔ 熔断冷却中（剩 ${heldMin(s.breakerUntil - Date.now())} 分钟）</span>` : '';
+        ? `<span style="color:var(--yellow)">⛔ 熔断冷却中（剩 ${heldMin(s.breakerUntil - Date.now())} 分钟）</span>` : '';
       return `
       <div class="task">
         <div class="t-thumb" style="font-size:18px">${siteIcon(host.includes('bilibili') ? 'bilibili' : host.includes('youtube') ? 'youtube' : '未分类')}</div>
@@ -1191,7 +1220,7 @@ async function loadStrategy() {
           <div class="name">${esc(host)}</div>
           <div class="meta">当前档位 ${s.level || 0}（间隔 ${(snap.defaults.find(d => host.includes(d.host))?.backoffLevels || [])[s.level] || '-'}s）· 累计失败 ${s.failures || 0} 次 ${breakerLeft}</div>
         </div>
-        <div class="st ${s.level ? 'held' : 'done'}">档位 ${s.level || 0}</div>
+        <div class="st ${s.level ? 'held' : 'flat'}">档位 ${s.level || 0}</div>
       </div>`;}).join('') : `<div class="empty">还没积累到学习数据——风控退避/熔断发生后这里会出现各站状态</div>`;
   } catch (e) { toast('策略加载失败：' + e.message); }
 }
