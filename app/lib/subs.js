@@ -308,11 +308,14 @@ function fetchViaGdl(url, maxItems = 20) {
   });
 }
 
-// 老订阅补救：名字还是占位（如订阅时缺 cookie）→ 每轮检查成功后重试认领
+// 老订阅补救：名字还是占位（如订阅时缺 cookie / API 瞬断）→ 每轮检查前后重试认领。
+// 返回 Promise（供入队前 await，标题才带真名）；非占位名/不支持的类型返回 null
 function refreshName(id) {
   const s = get(id);
-  if (!s || (s.kind !== 'gdl' && s.kind !== 'x') || !(s.name || '').startsWith('订阅 ')) return;
-  guessName(id);
+  if (!s || !(s.name || '').startsWith('订阅 ')) return null;
+  if (s.kind === 'bilibili' && s.uid) return biliName(s.uid).then(n => adoptName(id, n)).catch(() => {});
+  if (s.kind === 'gdl' || s.kind === 'x') return guessName(id);
+  return null;
 }
 
 // 检查一轮。回调 onNew(sub, item) 通知新内容
