@@ -56,6 +56,11 @@ function getJson(url, headers = {}) {
 }
 
 function classify(url) {
+  // B站合集/系列（/lists/{sid}、/channel/collectiondetail、/channel/seriesdetail）→ 独立 kind：
+  // 走 yt-dlp BilibiliCollectionList/SeriesList（实测 119 项 flat 秒回），增量追更 + 全量回溯都在合集内
+  const col = url.match(/space\.bilibili\.com\/(\d+)\/lists\/(\d+)/i)
+    || url.match(/space\.bilibili\.com\/(\d+)\/channel\/(?:collectiondetail|seriesdetail)\?[^#]*?sid=(\d+)/i);
+  if (col) return { kind: 'bili-collection', uid: col[1], sid: col[2], url: url.trim() };
   const m = url.match(/space\.bilibili\.com\/(\d+)/i);
   if (m) return { kind: 'bilibili', uid: m[1] };
   // X/Twitter 用户主页（不含单条推文 status 链接——那是任务队列的事）
@@ -88,7 +93,7 @@ const GDL_SITES = [
 
 function add(url, name) {
   const c = classify(url.trim());
-  if (!c) return { ok: false, reason: '支持 B站UP主、YouTube频道、X用户、Pixiv/微博/Reddit/Instagram/Danbooru 等图站用户页（部分站点需先导入 cookie）' };
+  if (!c) return { ok: false, reason: '支持 B站UP主/合集、YouTube频道、X用户、Pixiv/微博/Reddit/Instagram/Danbooru 等图站用户页（部分站点需先导入 cookie）' };
   const sub = {
     id: 's' + Date.now().toString(36), url: c.url || url.trim(),
     kind: c.kind, uid: c.uid || null, handle: c.handle || null, name: name || ('订阅 ' + (subs.length + 1)),
@@ -258,6 +263,7 @@ function fetchViaYtDlp(url, maxItems = 5) {
         const j = JSON.parse(out);
         const items = (j.entries || []).map(e => ({ id: e.id, type: 'video', text: e.title || '', url: e.url || null }));
         items.channel = j.channel || j.uploader || null;   // 频道名（首次检查后替换订阅占位名）
+        items.playlistTitle = j.title || null;             // 合集/播放列表标题（bili-collection 订阅名用）
         resolve(items);
       } catch (e) { reject(new Error('bad json from yt-dlp')); }
     });
@@ -320,6 +326,9 @@ async function checkSub(sub, onNew) {
   }
   else if (sub.kind === 'gdl') items = await fetchViaGdl(sub.url, 20);
   else if (sub.kind === 'youtube') items = await fetchViaYtDlp(sub.url);
+  // 合集订阅：flat-playlist 全量秒回（实测 119 项几秒），必须拉全量——合集按时间正序追加，
+  // 只看前 N 条永远看不到新集（新内容在尾部）；known 集合本身有去重，全量不炸
+  else if (sub.kind === 'bili-collection') items = await fetchViaYtDlp(sub.url, 0);
   if (!items) return { ok: false, reason: '未知订阅类型' };
 
   const known = new Set(sub.known || []);
@@ -349,13 +358,17 @@ async function checkSub(sub, onNew) {
     } else delete gs[id];   // 观察过期
   }
   sub.goneSeen = gs;
-  sub.lastSeen = items.map(it => it.id).slice(0, 100);
+  // lastSeen = 最近观察窗口（gone 判定基准）：普通订阅列表最新在前取头部；
+  // 合集按时间正序追加，新内容在尾部 → 取尾部 100，否则合集变长会误报「源头删帖」
+  const seenIds = items.map(it => it.id);
+  sub.lastSeen = (sub.kind === 'bili-collection' ? seenIds.slice(-100) : seenIds.slice(0, 100));
 
   // 基线判定：首次 或 known 为空（此前全失败空转的订阅，第一次真正拉到清单时也要做基线防轰炸）
   if (sub.checked === 0 || !(sub.known || []).length) {
     // 基线：只记录不下载；YouTube 用频道名，B 站由 card API 异步补，x/gdl 由元数据猜名
     sub.known = items.map(it => it.id);
-    if (items.channel) sub.name = items.channel;
+    if (sub.kind === 'bili-collection' && items.playlistTitle) sub.name = items.playlistTitle.replace(/^合集·/, '');
+    else if (items.channel) sub.name = items.channel;
     else if (sub.kind === 'gdl' || sub.kind === 'x') guessName(sub.id);   // 加订阅时没名字的（如当时缺 cookie），检查通了再补一次
   } else {
     let recorded = 0;
@@ -386,6 +399,7 @@ async function backfill(id, onItem) {
   // 回溯拉全量：B站一直翻到没有更多动态；YouTube 拉频道全部视频；X 时间线拉最近 200 条媒体推文
   // （X 全量易触发限流且混入大量转推，200 条是速度与覆盖的平衡点）
   if (sub.kind === 'bilibili') items = await fetchBiliDynamic(sub.uid, 'all');
+  else if (sub.kind === 'bili-collection') items = await fetchViaYtDlp(sub.url, 0);   // 合集回溯=全量清单（flat 秒回）
   else if (sub.kind === 'x') items = [];   // X 回溯由 main.js 的一个 gdl range 任务完成（yt-dlp 无时间线提取器，见 checkSub 注释）
   else if (sub.kind === 'youtube') items = await fetchViaYtDlp(sub.url, 0);
   else if (sub.kind === 'gdl') items = await fetchViaGdl(sub.url, 200);   // gallery-dl 型回溯：最近 200 项清单
@@ -399,9 +413,10 @@ function itemUrl(sub, it) {
   if (sub.kind === 'bilibili') return it.type === 'video'
     ? `https://www.bilibili.com/video/${it.id}`
     : `https://www.bilibili.com/opus/${it.id}`;
+  if (sub.kind === 'bili-collection') return it.url || `https://www.bilibili.com/video/${it.id}`;
   if (sub.kind === 'x') return it.url || `https://x.com/i/web/status/${it.id}`;
   if (sub.kind === 'youtube') return `https://www.youtube.com/watch?v=${it.id}`;
   return null;
 }
 
-module.exports = { configure, list, get, add, remove, update, checkSub, itemUrl, backfill, setProxy, refreshName, onNameChange, save };
+module.exports = { configure, list, get, add, remove, update, checkSub, itemUrl, backfill, setProxy, refreshName, onNameChange, save, classify };

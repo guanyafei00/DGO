@@ -26,6 +26,13 @@
   .logo { display:flex; align-items:center; gap:9px; font-weight:800; font-size:14.5px; letter-spacing:.3px; padding:4px 13px 14px; }
   .logo .gem { width:22px; height:22px; border-radius:7px; background:linear-gradient(135deg,var(--acc2),var(--acc-bright)); display:inline-flex; align-items:center; justify-content:center; font-size:12.5px; font-weight:800; color:#fff; }
   .logo .tag { font-size:11px; color:var(--acc2); background:var(--accbg); border-radius:var(--r-xs); padding:2px 7px; font-weight:600; }
+  /* 订阅多选（主人需求：点选 + Ctrl/Shift 批量） */
+  .pickbox { width:16px; height:16px; border:1.5px solid var(--line-strong); border-radius:4px; flex-shrink:0; cursor:pointer; display:flex; align-items:center; justify-content:center; font-size:11px; line-height:1; color:#fff; background:var(--panel); user-select:none; }
+  .pickbox.on { background:var(--acc); border-color:var(--acc); }
+  .selbar { position:fixed; bottom:18px; left:50%; transform:translateX(-50%); background:var(--panel); border:1px solid var(--line-strong); border-radius:var(--r); box-shadow:var(--shadow-lg); padding:10px 16px; display:none; gap:14px; align-items:center; z-index:180; font-size:13px; }
+  .selbar.on { display:flex; }
+  .selbar .sb-btn { cursor:pointer; color:var(--acc2); font-weight:600; }
+  .selbar .sb-x { cursor:pointer; color:var(--txt2); }
   .nav { display:flex; align-items:center; gap:10px; padding:10px 13px; border-radius:var(--r-md); color:var(--txt2); font-size:13.5px; cursor:pointer; user-select:none; transition:.15s; }
   .nav:hover { background:var(--panel2); color:var(--txt); }
   .nav.on { background:var(--accbg); color:var(--acc2); font-weight:700; }
@@ -167,7 +174,13 @@
     </div>
     <div class="hint">每 10 分钟自动增量检查（轻量单次请求，不触发风控）· 添加后会询问是否回溯全部历史 · 新内容自动入队 · <b>UP 主删除源视频不会删除你已下载的文件</b></div>
     <div class="sec-t">📡 我的订阅 <span class="cnt" id="s-cnt2">0</span> <select id="groupFilter" onchange="renderSubs()" style="margin-left:auto;font:inherit;font-size:12px;background:var(--panel2);color:var(--txt);border:1px solid var(--line);border-radius:var(--r-sm);padding:4px 10px;outline:none"><option value="">全部分组</option></select> <span class="act" style="cursor:pointer;font-size:12px" onclick="checkAllSubs()">⟳ 立即检查</span></div>
-    <div id="subList"><div class="empty">还没有订阅——支持 B站UP主 / YouTube频道 / X用户 / Pixiv / 微博 / Reddit / Instagram / Danbooru 等站点主页</div></div>
+    <div id="subList"><div class="empty">还没有订阅——支持 B站UP主/合集 / YouTube频道 / X用户 / Pixiv / 微博 / Reddit / Instagram / Danbooru 等站点主页</div></div>
+    <div class="selbar" id="selBar">
+      <span>已选 <b id="selCnt">0</b> 个订阅</span>
+      <span class="sb-btn" onclick="batchSubBackfill()">⤓ 全量下载</span>
+      <span class="sb-btn" onclick="batchSubCheck()">⟳ 检查</span>
+      <span class="sb-x" onclick="clearSubSel()" title="清除选择">✕</span>
+    </div>
   </div>
 
   <!-- 媒体库页 -->
@@ -642,6 +655,7 @@ function switchPage(p) {
   document.querySelectorAll('.nav').forEach(n => n.classList.toggle('on', n.dataset.page === p));
   document.querySelectorAll('.page').forEach(n => n.classList.toggle('on', n.id === 'page-' + p));
   if (p === 'rss') loadSubs();
+  updateSelBar();
   // 每次进媒体库都强制重扫磁盘：文件夹里手动删/加了文件也要如实反映（本地扫描快，分片异步不卡 UI）
   if (p === 'lib') { libDirty = false; loadLibrary(true); }
   if (p === 'strategy') loadStrategy();
@@ -800,6 +814,7 @@ async function renderSubs() {
   if (gf === '::none') items = items.filter(s => !(s.group || '').trim());
   else if (gf) items = items.filter(s => (s.group || '').trim() === gf);
   $('s-cnt2').textContent = items.length;
+  window._subOrder = items.map(s => s.id);   // 当前显示顺序（Shift 范围选基准，含分组过滤）
   const htmls = [];
   for (const s of items) {
     const ago = s.lastCheck ? Math.round((Date.now() - s.lastCheck) / 60000) : null;
@@ -818,10 +833,11 @@ async function renderSubs() {
     const atTag = s.autoTranscribe ? ' · <span style="color:var(--acc2)">📝 自动转写</span>' : '';
     htmls.push(`
     <div class="task"${paused ? ' style="opacity:.62"' : ''}>
-      <div class="t-thumb">📡<span class="eng">${s.kind === 'bilibili' ? 'B站' : s.kind === 'x' ? 'X' : s.kind === 'youtube' ? 'YouTube' : s.kind === 'gdl' ? '图站' : '订阅'}</span></div>
+      <div class="pickbox${_subSel.has(s.id) ? ' on' : ''}" onclick="subPick(event,'${s.id}')" title="选中（Ctrl 切换 / Shift 范围选）">${_subSel.has(s.id) ? '✔' : ''}</div>
+      <div class="t-thumb">📡<span class="eng">${s.kind === 'bilibili' ? 'B站' : s.kind === 'bili-collection' ? '合集' : s.kind === 'x' ? 'X' : s.kind === 'youtube' ? 'YouTube' : s.kind === 'gdl' ? '图站' : '订阅'}</span></div>
       <div class="t-info">
         <div class="name">${esc(s.name)}</div>
-        <div class="meta">${groupTag}${pausedTag ? pausedTag + ' · ' : ''}${ago === null ? '尚未检查' : ago + ' 分钟前检查过'} · 已跟踪 ${s.knownCount} 条${s.lastNew ? ` · 上轮新增 ${s.lastNew}` : ''}${s.autoBackfill ? ' · <span style="color:var(--acc2)">⤓ 自动全量下载中</span>' : ''}${s.kw && s.kw.length ? ' · 🏷 ' + esc(s.kw.join('/')) : ''}${freqTag}${atTag}${goneBadge(s)}</div>
+        <div class="meta">${groupTag}${pausedTag ? pausedTag + ' · ' : ''}${ago === null ? '尚未检查' : ago + ' 分钟前检查过'} · 已跟踪 ${s.knownCount} 条${s.lastNew ? ` · 上轮新增 ${s.lastNew}` : ''}${s._pendingBackfill ? ' · <span style="color:var(--acc2)">⏳ 排队待回溯</span>' : ''}${s.autoBackfill ? ' · <span style="color:var(--acc2)">⤓ 自动全量下载中</span>' : ''}${s.kw && s.kw.length ? ' · 🏷 ' + esc(s.kw.join('/')) : ''}${freqTag}${atTag}${goneBadge(s)}</div>
       </div>
       <div class="x" onclick="checkSub('${s.id}')" title="立即检查">⟳</div>
       <div class="x" onclick="backfillSub('${s.id}')" title="把 TA 已发布的内容全部加入下载队列">⤓</div>
@@ -833,8 +849,57 @@ async function renderSubs() {
       <div class="x" onclick="removeSub('${s.id}')" title="取消订阅">✕</div>
     </div>`);
   }
-  el.innerHTML = htmls.length ? htmls.join('') : (subsItems.length ? `<div class="empty">该分组下暂无订阅</div>` : `<div class="empty">还没有订阅——支持 B站UP主 / YouTube频道 / X用户 / Pixiv / 微博 / Reddit / Instagram / Danbooru 等站点主页</div>`);
+  el.innerHTML = htmls.length ? htmls.join('') : (subsItems.length ? `<div class="empty">该分组下暂无订阅</div>` : `<div class="empty">还没有订阅——支持 B站UP主/合集 / YouTube频道 / X用户 / Pixiv / 微博 / Reddit / Instagram / Danbooru 等站点主页</div>`);
+  updateSelBar();
 }
+
+// ===== 订阅多选（主人需求：鼠标点选，Ctrl 切换、Shift 范围选，批量下载）=====
+const _subSel = new Set();
+let _subAnchor = null;
+function subPick(e, id) {
+  e.stopPropagation();
+  const order = window._subOrder || subsItems.map(s => s.id);
+  if (e.shiftKey && _subAnchor && order.includes(_subAnchor)) {
+    const a = order.indexOf(_subAnchor), b = order.indexOf(id);
+    for (let i = Math.min(a, b); i <= Math.max(a, b); i++) _subSel.add(order[i]);
+  } else if (_subSel.has(id)) _subSel.delete(id);
+  else _subSel.add(id);
+  _subAnchor = id;
+  renderSubs();
+}
+function updateSelBar() {
+  const bar = document.getElementById('selBar');
+  if (!bar) return;
+  const on = document.getElementById('page-rss').classList.contains('on') && _subSel.size > 0;
+  bar.classList.toggle('on', on);
+  if (on) document.getElementById('selCnt').textContent = _subSel.size;
+}
+async function batchSubBackfill() {
+  const ids = [..._subSel];
+  if (!ids.length) return;
+  if (!confirm(`把选中的 ${ids.length} 个订阅已发布的全部内容加入下载队列？\n队列忙时会自动排队，当前任务完成后依次开始。`)) return;
+  toast(`正在为 ${ids.length} 个订阅排队…`);
+  let ok = 0, fail = 0, queued = 0;
+  for (const id of ids) {
+    try {
+      const r = await window.fetchie.subsBackfill(id);
+      if (r && r.ok) { ok++; if (r.queued) queued++; } else fail++;
+    } catch (e) { fail++; }
+  }
+  toast(`批量回溯：${ok} 个已受理${queued ? `（${queued} 个排队中，自动依次开始）` : ''}${fail ? `，${fail} 个失败` : ''}`);
+  _subSel.clear(); _subAnchor = null;
+  loadSubs();
+}
+async function batchSubCheck() {
+  const ids = [..._subSel];
+  if (!ids.length) return;
+  toast(`检查 ${ids.length} 个订阅中…（自动依次进行，完成后提示）`);
+  for (const id of ids) { try { await window.fetchie.subsCheck(id); } catch (e) {} }
+  _subSel.clear(); _subAnchor = null;
+  loadSubs();
+  toast('选中订阅检查完毕');
+}
+function clearSubSel() { _subSel.clear(); _subAnchor = null; renderSubs(); }
 
 // #70② 订阅设置模态：暂停 / 分组 / 检查频率 / 自动转写
 function editSubOpts(id) {
@@ -988,6 +1053,7 @@ async function backfillSub(id) {
   try {
     const r = await window.fetchie.subsBackfill(id);
     if (!r.ok) return toast(r.reason);
+    if (r.queued) return toast('队列正忙，已排入待回溯队列——当前任务完成后自动开始');
     if (!r.added && !r.skipped) return toast('未发现可下载的内容（纯文字动态无媒体）');
     toast(`已入队 ${r.added} 个任务${r.skipped ? `（${r.skipped} 个已在队列跳过）` : ''}，按风控策略自动限速下载`);
   } catch (e) { toast('回溯失败：' + (e.message || e)); }

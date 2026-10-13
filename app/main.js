@@ -408,6 +408,8 @@ app.whenReady().then(() => {
   queue = new DownloadQueue(snapshot => {
     if (win && !win.isDestroyed()) win.webContents.send('queue:snapshot', snapshot);
     store.save(snapshot);          // 每次状态变化持久化
+    // 主人需求「排队不拒绝」：队列空闲即启动排队的回溯任务（FIFO，_drainingBackfill 防重入）
+    try { if (queueIdle()) drainBackfills(); } catch (e) {}
     // 媒体库自动刷新：有任务新进 done（排除恢复的存量）
     let freshDone = false;
     const doneTitles = [];
@@ -1076,10 +1078,13 @@ app.whenReady().then(() => {
     return { ok: true };
   });
   // 回溯下载（手动 ⤓ 与「新订阅自动全量」共用）：拉订阅源全部媒体逐条入队（队列内已有同 URL 的自动跳过）
-  async function runBackfill(real) {
-    if (queue.active > 0 || [...queue.items.values()].some(x => ['queued', 'downloading'].includes(x.status))) {
-      return { ok: false, reason: '队列正忙，等当前任务跑完再回溯' };
-    }
+  // 主人需求「排队不拒绝」：队列忙时不再弹回，进 FIFO 待回溯队列，队列空闲后自动开跑
+  const _pendingBackfills = [];   // sub id FIFO（去重）
+  let _drainingBackfill = false;
+  function queueIdle() {
+    return queue.active === 0 && ![...queue.items.values()].some(x => ['queued', 'downloading', 'held'].includes(x.status));
+  }
+  async function _runBackfillNow(real) {
     let added = 0, skipped = 0;
     // gdl 型订阅：所有项共享同一主页 URL（逐条入队会被同 URL 去重吞掉），整段一个任务即可
     // （gallery-dl 自动翻页拉完整列表全量下载；下载时自动跳过已存在的文件，重复回溯安全）
@@ -1106,6 +1111,31 @@ app.whenReady().then(() => {
     });
     if (win && !win.isDestroyed()) win.webContents.send('queue:snapshot', queue.snapshot());
     return { ok: true, added, skipped, total: r.total, media: r.media };
+  }
+  async function drainBackfills() {
+    if (_drainingBackfill) return;
+    _drainingBackfill = true;
+    try {
+      while (_pendingBackfills.length && queueIdle()) {
+        const id = _pendingBackfills.shift();
+        const real = subs.get(id);
+        if (!real) continue;
+        delete real._pendingBackfill;
+        if (win && !win.isDestroyed()) win.webContents.send('subs:changed', subs.list());
+        if (real.userPaused || real.paused) continue;   // 排队期间被暂停：丢弃，不再回溯
+        try { toastMsg('开始回溯：' + real.name + '（排队已轮到）'); await _runBackfillNow(real); }
+        catch (e) { toastMsg('回溯失败：' + real.name + ' — ' + String(e.message || e).slice(0, 80)); }
+      }
+    } finally { _drainingBackfill = false; }
+  }
+  async function runBackfill(real) {
+    if (queueIdle()) return _runBackfillNow(real);
+    if (!_pendingBackfills.includes(real.id)) {
+      _pendingBackfills.push(real.id);
+      real._pendingBackfill = true;   // 瞬态标记：UI 显示「排队待回溯」（不落盘）
+      if (win && !win.isDestroyed()) win.webContents.send('subs:changed', subs.list());
+    }
+    return { ok: true, queued: true, added: 0, skipped: 0, total: 0, media: 0 };
   }
   ipcMain.handle('subs:backfill', async (e, { id }) => {
     const real = subs.get(id);
