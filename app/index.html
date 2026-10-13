@@ -450,9 +450,11 @@ function render() {
   $('d-cnt').textContent = done.length;
 
   // —— 分组渲染：按主页名称（订阅名/UP主）聚合，组头箭头展开收起（主人需求）——
+  // 旧任务标题里的占位名（订阅 N）是历史快照改不了的，展示时清洗掉（主人反馈：不想再看到「订阅 3」）
+  const cleanTitle = t => String(t || '').replace(/^(\[订阅(?:回溯)?\])\s*订阅\s*\d+\s*·?\s*/, '$1 ').trim();
   const groupOf = t => {
-    const m = (t.title || '').match(/^\[(?:订阅回溯|订阅)\]\s*(.+?)\s*·/);
-    if (m) return m[1];
+    const m = String(t.title || '').match(/^\[(?:订阅回溯|订阅)\]\s*(.+?)\s*·/);
+    if (m) return /^订阅\s*\d+$/.test(m[1]) ? '旧订阅任务' : m[1];   // 历史占位名归并到一个诚实组名
     if (t.uploader) return t.uploader;
     return '粘贴的任务';
   };
@@ -472,7 +474,7 @@ function render() {
     <div class="task">
       <div class="t-thumb">${engIcon(t.engine)}<span class="eng">${engName(t.engine)}</span></div>
       <div class="t-info">
-        <div class="name">${esc(t.title)}</div>
+        <div class="name">${esc(cleanTitle(t.title))}</div>
         <div class="meta"><span>${stName[t.status]} ${t.progress ? '· ' + t.progress.toFixed(0) + '%' : ''}</span>${t.fileCount ? `<span>已收 ${t.fileCount} 个文件</span>` : ''}${t._audio ? '<span>🎧 音频</span>' : ''}${t._subs ? '<span>⬇ 字幕</span>' : ''}${t._transcribe ? `<span>📝 ${asrStatus(t) || '待转写'}</span>` : ''}${heldNote}</div>
         <div class="bar"><i style="width:${t.status==='held'||t.status==='queued'?2:t.progress}%"></i></div>
       </div>
@@ -485,7 +487,7 @@ function render() {
     <div class="task">
       <div class="t-thumb">${engIcon(t.engine)}<span class="eng">${engName(t.engine)}</span></div>
       <div class="t-info">
-        <div class="name">${esc(t.title)}</div>
+        <div class="name">${esc(cleanTitle(t.title))}</div>
         <div class="meta" title="${t.error ? esc(t.error) : ''}">${t.error ? esc(translateError(t.error)) : (t.filePath ? esc(t.filePath) : '')}</div>
       </div>
       ${t.filePath ? `<div class="x" onclick="openFileFolderById('${t.id}')" title="打开文件位置">📂</div>` : ''}
@@ -518,7 +520,7 @@ function render() {
       ${dir ? `<div class="x" onclick="event.stopPropagation();openGroupFolder('${kind}','${escAttr(g)}')" title="打开该主页的下载文件夹">📂</div>` : ''}
       <div class="st flat">${open ? '收起 ▲' : '展开 ▼'}</div>
     </div>
-    ${open ? `<div style="margin:0 0 8px 28px">${(kind === 'active' ? ts.map(activeCard) : ts.map(doneCard)).join('')}</div>` : ''}`;
+    ${open ? `<div style="margin:0 0 8px 28px">${(kind === 'active' ? ts.map(activeCard) : ts.map(doneCard)).join('')}<div style="text-align:right;margin-top:6px"><span class="act" style="cursor:pointer;font-size:12px" onclick="toggleTaskGroup('${kind}','${escAttr(g)}')">⌃ 收起该组</span></div></div>` : ''}`;
   };
   $('queue').innerHTML = active.length ? groupTasks(active).map(e => groupBlock(e, 'active')).join('')
     : `<div class="empty">队列空空如也——贴个链接试试，比如 B 站视频或 UP 主主页</div>`;

@@ -949,6 +949,8 @@ app.whenReady().then(() => {
           continue;
         }
         try {
+          // 占位名（订阅 N）先补救：入队标题才有真名，不再出现「订阅 3」这种标记（bilibili 也在 refreshName 覆盖范围内）
+          if ((real.name || '').startsWith('订阅 ')) { try { await subs.refreshName(real.id); } catch (e) {} }
           const gdlSeqs = [];   // gallery-dl 型订阅：新内容只有序号没有独立 URL，先收集再合并连续段
           const r = await subs.checkSub(real, (s, it) => {
             if (it.type === 'text') return;   // 纯文字动态无媒体，只记录不入队
@@ -974,7 +976,7 @@ app.whenReady().then(() => {
             }
           }
           real.failStreak = 0;
-          if (real.kind === 'gdl' || real.kind === 'x') subs.refreshName(real.id);   // 占位名补救（老订阅/缺 cookie 时期加的）
+          subs.refreshName(real.id);   // 占位名补救（bilibili/gdl/x 都覆盖；已修好的直接跳过）
           // 新订阅自动全量（主人需求：订阅=要全部）：首检建好基线就自动回溯；
           // 队列忙/失败不清标记，下轮检查（10 分钟）自动重试，成功才落盘清除
           if (real.autoBackfill && r.ok) {
@@ -1085,6 +1087,7 @@ app.whenReady().then(() => {
     return queue.active === 0 && ![...queue.items.values()].some(x => ['queued', 'downloading', 'held'].includes(x.status));
   }
   async function _runBackfillNow(real) {
+    if ((real.name || '').startsWith('订阅 ')) { try { await subs.refreshName(real.id); } catch (e) {} }   // 回溯标题也别带「订阅 N」占位名
     let added = 0, skipped = 0;
     // gdl 型订阅：所有项共享同一主页 URL（逐条入队会被同 URL 去重吞掉），整段一个任务即可
     // （gallery-dl 自动翻页拉完整列表全量下载；下载时自动跳过已存在的文件，重复回溯安全）
