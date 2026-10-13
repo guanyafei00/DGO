@@ -34,6 +34,10 @@ const VIDEO_HINTS = [
 function classify(url) {
   const u = url.trim();
   if (!/^https?:\/\//i.test(u)) return { engine: 'invalid', reason: '不是 http(s) 链接' };
+  // B站合集/系列页 → yt-dlp（BilibiliCollectionList/SeriesList 提取器，实测 119 项 flat 秒回）。
+  // 必须在 space.bilibili.com 通用规则之前：gallery-dl 不认合集页，会整单失败
+  if (/space\.bilibili\.com\/\d+\/lists\/\d+/i.test(u) ||
+      /space\.bilibili\.com\/\d+\/channel\/(?:collectiondetail|seriesdetail)\?/i.test(u)) return { engine: 'yt-dlp' };
   if (GALLERY_PATTERNS.some(re => re.test(u))) return { engine: 'gallery-dl' };
   if (VIDEO_HINTS.some(re => re.test(u))) return { engine: 'yt-dlp' };
   return { engine: 'unknown' }; // 交给 yt-dlp 探测（1000+ 站兜底）
