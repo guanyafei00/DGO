@@ -129,6 +129,8 @@ class DownloadQueue {
     const it = this.items.get(id);
     if (!it) return false;
     if (['queued', 'downloading', 'held'].includes(it.status)) {
+      // 直连引擎没有子进程，取消 = destroy 正在传输的请求（_child 为空 killTree 自然跳过）
+      if (it._directReq) { try { it._directReq.destroy(); } catch (e) {} it._directReq = null; }
       killTree(it._child);
       if (it._wasActive) { this.active = Math.max(0, this.active - 1); it._wasActive = false; }
       // 会审 DGO6-07：cancel 立即清磁盘巡检 timer（不留 30s 空转；兜底由 timer 自清分支与 close 事件覆盖）
@@ -297,6 +299,7 @@ class DownloadQueue {
     };
 
     const args = this.buildArgs(it);
+    if (it.engine === 'direct') return this.runDirect(it, done, seq);   // 直连引擎无子进程，独立执行路径
     if (!args) return done('error', { error: '不支持的引擎: ' + it.engine });
 
     fs.mkdirSync(OUTDIR, { recursive: true });
@@ -369,6 +372,7 @@ class DownloadQueue {
   buildArgs(it) {
     const ytdlp = pick(exe('yt-dlp'));
     const gdl = pick(exe('gallery-dl'));
+    if (it.engine === 'direct') return null;   // 不会被调用（run 已提前分流），防误用
     if (it.engine === 'yt-dlp') {
       // 媒体库物理目录：{站点}/{UP主}/{标题} [id].ext（与 gallery-dl 的 bilibili/{作者}/ 结构对齐）
       const site = /bilibili\.com/i.test(it.url) ? 'bilibili'
@@ -411,6 +415,108 @@ class DownloadQueue {
       return { exe: gdl, args };
     }
     return null;
+  }
+
+  // 直连引擎：directprobe 隐藏窗口现取 CDN 直链（带签名/时效，每次运行必须现取）→ Node 流式下载。
+  // 无子进程：看门狗/磁盘巡检用 destroy 请求代替 killTree；取消走 cancel 里的 _directReq 分支
+  runDirect(it, done, seq) {
+    const http = require('http');
+    const https = require('https');
+    const electron = require('electron');
+    const dp = require('./directprobe');
+    it._lastOutput = Date.now();
+    // 磁盘/看门狗巡检（与 spawn 路径同节奏 30s，逻辑一致）
+    it._diskTimer = setInterval(() => {
+      if (seq !== it._runSeq || it.status !== 'downloading') { clearInterval(it._diskTimer); it._diskTimer = null; return; }
+      const wdReason = this._watchdogReason(it);
+      if (wdReason) {
+        if (it._directReq) { try { it._directReq.destroy(); } catch (e) {} }
+        it.status = 'error';
+        it.error = '看门狗：' + wdReason + '，已自动终止（任务可重试）';
+        this.active = Math.max(0, this.active - 1);
+        it._wasActive = false;
+        clearInterval(it._diskTimer); it._diskTimer = null;
+        this.tick(); this.push();
+        return;
+      }
+      if (diskLow()) {
+        if (it._directReq) { try { it._directReq.destroy(); } catch (e) {} }
+        it.status = 'held';
+        it._diskHeld = true;
+        it.error = '磁盘空间不足（剩余 ' + freeMB() + ' MB），已暂停——清理空间后自动继续';
+        this.active = Math.max(0, this.active - 1);
+        it._wasActive = false;
+        clearInterval(it._diskTimer); it._diskTimer = null;
+        this.tick(); this.push();
+      }
+    }, 30 * 1000);
+    const clearDiskTimer = () => { if (it._diskTimer) { clearInterval(it._diskTimer); it._diskTimer = null; } };
+
+    const fail = (msg) => {
+      clearDiskTimer();
+      if (it._directReq) { try { it._directReq.destroy(); } catch (e) {} it._directReq = null; }
+      if (seq !== it._runSeq || !it._wasActive || it.status === 'canceled') return;
+      const st = strategy.reportFailure(it.url, false);
+      done(strategy.isBreakered(it.url) ? 'held' : 'error', { error: String(msg).slice(0, 300), level: st.level });
+    };
+
+    dp.probe(it.url, { electron }).then(r => {
+      if (seq !== it._runSeq) return;   // 旧 run 的探测晚到，丢弃
+      if (r.error) return fail(r.error);
+      if (/\.m3u8/i.test(r.url)) return fail('仅探测到分段流(m3u8)，暂不支持自动下载：请在页面内直接观看或稍后重试');
+      const site = /douyin\.com/i.test(it.url) ? 'douyin'
+        : /kuaishou\.com|chenzhongtech/i.test(it.url) ? 'kuaishou' : 'other';
+      // 视频 id：URL 里能抓就抓（媒体库溯源用），抓不到用任务 id 兑底
+      const vm = it.url.match(/\/video\/(\d+)/) || it.url.match(/short-video\/([\w-]+)/);
+      const vid = vm ? vm[1] : it.id;
+      const dir = path.join(OUTDIR, site);
+      fs.mkdirSync(dir, { recursive: true });
+      const fp = path.join(dir, dp.sanitizeName(r.title) + ' [' + vid + '].mp4');
+      it.title = r.title || it.title;   // 探测拿到真实标题后回填任务卡
+
+      // 下载请求：跟随重定向（CDN 直链常 302），移动 UA + 页面 Referer 与探测窗口对齐
+      const UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1';
+      const doReq = (u, redirects) => {
+        if (redirects > 5) return fail('CDN 重定向次数过多');
+        const mod = u.startsWith('https') ? https : http;
+        const req = mod.get(u, {
+          headers: { 'User-Agent': UA, 'Referer': it.url },
+        }, res => {
+          if (seq !== it._runSeq) { res.resume(); return; }
+          if ([301, 302, 303, 307, 308].includes(res.statusCode) && res.headers.location) {
+            res.resume();
+            return doReq(new URL(u, res.headers.location).href, redirects + 1);
+          }
+          if (res.statusCode !== 200) { res.resume(); return fail('CDN 返回 HTTP ' + res.statusCode + '（直链可能已过期，重试会现取新链）'); }
+          const total = parseInt(res.headers['content-length'] || '0', 10) || 0;
+          let got = 0;
+          const out = fs.createWriteStream(fp);
+          out.on('error', e => { req.destroy(); fail('写入文件失败: ' + e.message); });
+          res.on('data', c => {
+            if (seq !== it._runSeq) { req.destroy(); return; }
+            got += c.length;
+            it._lastOutput = Date.now();   // 看门狗：收到数据 = 活着
+            if (total) it.progress = Math.min(99, Math.floor(got / total * 100));
+            this.pushThrottled();
+          });
+          res.on('error', e => fail('网络中断: ' + e.message));
+          res.pipe(out);
+          out.on('finish', () => {
+            if (seq !== it._runSeq) return;
+            clearDiskTimer();
+            it._directReq = null;
+            if (!it._wasActive || it.status === 'canceled') return;
+            if (!it._files.includes(fp)) it._files.push(fp);
+            strategy.reportSuccess(it.url);
+            done('done', { progress: 100, filePath: fp, fileCount: 1 });
+          });
+        });
+        req.on('error', e => fail('网络请求失败: ' + e.message));
+        req.setTimeout(20000, () => { req.destroy(new Error('CDN 连接超时')); });
+        it._directReq = req;
+      };
+      doReq(r.url, 0);
+    }).catch(e => fail(e && e.message || e));
   }
 
   parseOutput(it, chunk) {

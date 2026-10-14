@@ -379,6 +379,9 @@ function translateError(e) {
   if (/timeout|timed out|ETIMEDOUT|ECONNRESET|网络/i.test(s)) return '网络超时：点任务上的 ⟳ 重试一下';
   if (/404|not found|不存在|Unable to download|Unsupported URL/i.test(s)) return '链接失效或暂不支持：确认链接能在这台设备的浏览器里打开';
   if (/private|members-only|付费|登录.*观看/i.test(s)) return '该内容需要登录或会员：左下角扫码登录后再试';
+  if (/直链可能已过期|探测到分段流|页面加载超时|验证|CDN/.test(s)) return '抖音/快手直连下载失败：站点可能弹了验证，稍后点 ⟳ 重试（重试会重新探测新链）';
+  if (/视频号/.test(s)) return s;
+  if (/tiktok/i.test(s)) return 'TikTok 需要代理网络：请到设置里配置代理后重试';
   if (/ENOENT|no such file/i.test(s)) return '文件或目录出了问题：检查设置里的下载目录是否可用';
   if (/HTTP Error 5\d\d/i.test(s)) return '站点服务器开小差了：稍后点 ⟳ 重试';
   return s.length > 80 ? s.slice(0, 80) + '…' : s;
@@ -436,8 +439,8 @@ async function addUrls() {
   }
 }
 
-const engIcon = e => e === 'yt-dlp' ? '🎥' : e === 'gallery-dl' ? '🖼️' : '❓';
-const engName = e => e === 'yt-dlp' ? '视频' : e === 'gallery-dl' ? '图文' : '识别中';
+const engIcon = e => e === 'yt-dlp' ? '🎥' : e === 'gallery-dl' ? '🖼️' : e === 'direct' ? '⚡' : '❓';
+const engName = e => e === 'yt-dlp' ? '视频' : e === 'gallery-dl' ? '图文' : e === 'direct' ? '直连' : '识别中';
 const stName = { queued:'排队中', downloading:'下载中', held:'风控冷却', done:'完成', error:'失败', canceled:'已取消' };
 const heldMin = ms => Math.max(1, Math.ceil(ms/60000));
 

@@ -24,10 +24,19 @@ const GALLERY_PATTERNS = [
   /imgur\.com/i, /flickr\.com/i,
 ];
 
+// 直连探测站：yt-dlp 已无法解析（抖音 a_bogus JSVMP 签名 / 快手 GraphQL+cookie），
+// 走隐藏窗口让页面自己过反爬，webRequest 截获 CDN 直链（directprobe.js）
+const DIRECT_PATTERNS = [
+  /(?:^|\.)douyin\.com\//i,          // 抖音网页/分享页（含 v.douyin.com 短链）
+  /(?:^|\.)kuaishou\.com\//i,        // 快手
+  /chenzhongtech\.com/i,             // 快手老域名
+];
+
 const VIDEO_HINTS = [
   /bilibili\.com\/video\//i,
   /youtube\.com|youtu\.be/i,
-  /v\.qq\.com/i, /ixigua\.com/i, /douyin\.com/i, /kuaishou\.com/i,
+  /v\.qq\.com/i, /ixigua\.com/i,
+  /tiktok\.com/i,   // TikTok：yt-dlp 提取器可用，但需要代理网络（queue 侧会带 --proxy）
   /twitch\.tv/i, /vimeo\.com/i, /dailymotion\.com/i,
 ];
 
@@ -38,6 +47,10 @@ function classify(url) {
   // 必须在 space.bilibili.com 通用规则之前：gallery-dl 不认合集页，会整单失败
   if (/space\.bilibili\.com\/\d+\/lists\/\d+/i.test(u) ||
       /space\.bilibili\.com\/\d+\/channel\/(?:collectiondetail|seriesdetail)\?/i.test(u)) return { engine: 'yt-dlp' };
+  // 微信视频号：无任何开放提取器（需微信客户端私有协议），诚实拒绝并给替代路径
+  if (/channels\.weixin\.qq\.com/i.test(u))
+    return { engine: 'invalid', reason: '微信视频号暂不支持：需微信客户端私有协议，建议在手机端保存视频后手动放入下载目录' };
+  if (DIRECT_PATTERNS.some(re => re.test(u))) return { engine: 'direct' };
   if (GALLERY_PATTERNS.some(re => re.test(u))) return { engine: 'gallery-dl' };
   if (VIDEO_HINTS.some(re => re.test(u))) return { engine: 'yt-dlp' };
   return { engine: 'unknown' }; // 交给 yt-dlp 探测（1000+ 站兜底）
@@ -83,6 +96,8 @@ async function identify(url) {
   const c = classify(url);
   if (c.engine === 'gallery-dl') return { engine: 'gallery-dl', ok: true, title: null, uploader: null };
   if (c.engine === 'invalid') return c;
+  // 直连站不做 yt-dlp 元数据探测（注定失败白等 30 秒）；标题由 directprobe 加载页面时现取
+  if (c.engine === 'direct') return { engine: 'direct', ok: true, title: null, uploader: null };
   const p = await probe(url);
   return p;
 }
