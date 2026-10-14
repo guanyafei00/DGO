@@ -346,19 +346,38 @@ async function checkSub(sub, onNew) {
   // goneSeen 记 { n: 连续消失轮数, t: 最近一次判消失的时间 }——id 滑出 lastSeen 窗口后观察不中断，
   // 30 分钟没有再次观察到即过期清除（防旧帖残留计数把「自然滑出」误判成删帖）
   const visible = new Set(items.map(it => it.id));
-  const missing = (sub.lastSeen || []).filter(id => !visible.has(id));
-  const candidates = missing.slice(0, Math.max(0, missing.length - fresh.length));
   const gs = sub.goneSeen || {};
   const nowMs = Date.now();
   const gone = [];
+  let candidates;
+  if (sub.kind === 'bili-collection') {
+    // 合集=全量拉取（flat-playlist 秒回）：known 与 visible 均为全量，直接比对。
+    // 旧代码拿 lastSeen(tail 100) 对全量窗口，头部老条目每轮都「不在窗口」→ 连续 2 轮后
+    // 被误判源头删除（>100 项的合集每轮检查必误报，确定性 bug，主人实证）
+    candidates = [...known].filter(id => !visible.has(id));
+  } else {
+    // 部分窗口类型（bilibili 翻 2 页 / gdl、x 取 20 条）：只与上一轮实际窗口比对 + 新帖挤出宽容。
+    // 新帖在最前（倒序），把 lastSeen 最老的（尾部）挤出列表属正常滑动，不判删除。
+    const missing = (sub.lastSeen || []).filter(id => !visible.has(id));
+    // 部分返回防护：本轮条数不足上轮 60%（翻页瞬断只拿回部分列表）→ 本轮整体跳过判定，
+    // 宁可漏报也不误报；下轮拉完整了再判（漏报可下轮补救，误报已骚扰用户）
+    candidates = items.length < (sub.lastSeen || []).length * 0.6
+      ? []
+      : missing.slice(0, Math.max(0, missing.length - fresh.length));
+  }
   for (const id of candidates) gs[id] = { n: (gs[id] ? gs[id].n : 0) + 1, t: nowMs };
   for (const id of Object.keys(gs)) {
     if (visible.has(id)) { delete gs[id]; continue; }   // 复活即清除
     if (candidates.includes(id)) continue;   // 本轮已计数，勿重复累加
     if (nowMs - (gs[id].t || 0) < 30 * 60 * 1000) {   // 仍在观察期内（约 3 轮检查）
       gs[id].n++; gs[id].t = nowMs;
-      if (gs[id].n >= 2) { gone.push(id); delete gs[id]; }
     } else delete gs[id];   // 观察过期
+  }
+  // 统一判定：n >= 2 即删除。必须放在计数之后独立成环——
+  // 旧写法把判定塞进上面的循环里，而本轮候选会被 continue 跳过，导致合集型
+  // （候选每轮都出现）永远涨到 n 却永不判定，真删帖全部漏报（测试实锤）
+  for (const id of Object.keys(gs)) {
+    if (gs[id].n >= 2) { gone.push(id); delete gs[id]; }
   }
   sub.goneSeen = gs;
   // lastSeen = 最近观察窗口（gone 判定基准）：普通订阅列表最新在前取头部；
