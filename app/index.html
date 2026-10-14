@@ -129,7 +129,7 @@
 <body>
 
 <aside class="sidebar">
-  <div class="logo"><span class="gem">D</span>DGO<span class="tag">M3</span></div>
+  <div class="logo"><span class="gem">D</span>DGO</div>
   <div class="nav on" data-page="tasks" onclick="switchPage('tasks')">⬇ 任务队列 <span class="cnt" id="q-cnt">0</span></div>
   <div class="nav" data-page="rss" onclick="switchPage('rss')">📡 订阅 <span class="cnt" id="s-cnt">0</span></div>
   <div class="nav" data-page="lib" onclick="switchPage('lib')">📚 媒体库 <span class="cnt" id="l-cnt">0</span></div>
@@ -810,6 +810,12 @@ async function loadSubs() {
     sel.value = groups.includes(cur) || ['::none', ''].includes(cur) ? cur : '';
   }
   renderSubs();
+  refreshNavCounts();
+}
+// 侧栏角标常驻刷新（主人反馈：订阅/媒体库不点开就永远显示 0）
+function refreshNavCounts() {
+  const s = $('s-cnt'); if (s) s.textContent = subsItems.length;
+  const l = $('l-cnt'); if (l && libData) l.textContent = libData.groups.length;
 }
 async function renderSubs() {
   const el = $('subList');
@@ -1066,7 +1072,7 @@ async function backfillSub(id) {
 }
 async function checkSub(id) { toast('检查中…'); await window.fetchie.subsCheck(id); loadSubs(); }
 async function checkAllSubs() { toast('检查全部订阅中…'); await window.fetchie.subsCheck(null); loadSubs(); }
-window.fetchie.onSubs(() => { if (document.getElementById('page-rss').classList.contains('on')) loadSubs(); });
+window.fetchie.onSubs(() => { loadSubs(); });
 
 // ===== 媒体库 =====
 let libData = null;
@@ -1250,6 +1256,7 @@ async function transcribeFile(p) {
 window.fetchie.onLibraryRefresh(() => {
   libDirty = true;
   if (document.getElementById('page-lib').classList.contains('on')) { libDirty = false; loadLibrary(true); }
+  else if (!libData) loadLibrary(true);   // 后台补扫：只为更新侧栏媒体库角标（不打断当前页）
 });
 
 // ===== 策略页 =====
@@ -1352,6 +1359,10 @@ refreshLoginBadge();
 
 window.fetchie.onQueue(snap => { items = snap; render(); });
 window.fetchie.snapshot().then(s => { items = s; render(); });
+// 侧栏角标首刷（主人反馈：不点开订阅/媒体库就看不到现有数量）
+// 订阅数立即取（读 json 秒回）；媒体库后台静默全扫一次（大目录不卡界面，扫完角标自然更新）
+window.fetchie.subsList().then(list => { subsItems = list || []; refreshNavCounts(); }).catch(() => {});
+loadLibrary(true).catch(() => {});
 
 // 首启引导（会审 P0-5）：只在第一次弹，三步说清核心用法
 try {
