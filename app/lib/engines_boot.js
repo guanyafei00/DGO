@@ -90,6 +90,8 @@ async function gdlTag() {
 
 // win 解压：PowerShell Expand-Archive（把 zip 内的 ffmpeg.exe 提到 destDir）
 // 会审 T2c：路径里的单引号会截断 PS 字符串（甚至注入命令），PS 单引号串里 '' 才是一个字面单引号
+// v0.1.9 修复：解压出的 ffmpeg-*-essentials_build 目录（含 doc/ 约 500MB）此前从不清理，
+// 每次重下都往安装目录里堆一座垃圾山——复制出 ffmpeg.exe 后整个删掉
 function winExpand(zipPath, destDir) {
   return new Promise((res, rej) => {
     const q = s => String(s).replace(/'/g, "''");
@@ -100,7 +102,19 @@ function winExpand(zipPath, destDir) {
     let out = '';
     p.stdout.on('data', d => { out += d; });
     p.on('error', rej);
-    p.on('exit', code => (code === 0 && out.includes('OK')) ? res() : rej(new Error('Expand-Archive 失败 code=' + code)));
+    p.on('exit', code => {
+      if (!(code === 0 && out.includes('OK'))) return rej(new Error('Expand-Archive 失败 code=' + code));
+      // 清理：解压残留目录 + zip 本体（ffmpeg.exe 已提到 destDir 顶层；失败也只是留垃圾，不阻断）
+      try {
+        for (const ent of fs.readdirSync(destDir, { withFileTypes: true })) {
+          if (ent.isDirectory() && /essentials_build|^ffmpeg-/i.test(ent.name)) {
+            fs.rmSync(path.join(destDir, ent.name), { recursive: true, force: true });
+          }
+        }
+        if (fs.existsSync(zipPath)) fs.unlinkSync(zipPath);
+      } catch (e) { console.warn('[engines] 清理解压残留失败:', e.message); }
+      res();
+    });
   });
 }
 
