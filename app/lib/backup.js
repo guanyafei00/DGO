@@ -7,7 +7,7 @@ const fs = require('fs');
 const BUNDLE_VERSION = 1;
 
 // settings 恢复白名单（防导入包注入未知键）。会审 DGO6-03：补 minFreeMB（#70① 新增设置项）
-const SETTINGS_KEYS = ['outDir', 'notifyDone', 'notifyMode', 'aiUrl', 'aiKey', 'aiModel', 'asrMirror', 'minFreeMB'];
+const SETTINGS_KEYS = ['outDir', 'notifyDone', 'notifyMode', 'aiUrl', 'aiKey', 'aiModel', 'asrMirror', 'minFreeMB', 'maxConcurrent', 'rateLimitMB'];
 
 function buildBundle({ settings, subs }) {
   return {

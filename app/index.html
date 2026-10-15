@@ -173,7 +173,7 @@
       <button class="btn-dl" onclick="addSub()">＋ 添加订阅</button>
     </div>
     <div class="hint">每 10 分钟自动增量检查（轻量单次请求，不触发风控）· 添加后会询问是否回溯全部历史 · 新内容自动入队 · <b>UP 主删除源视频不会删除你已下载的文件</b></div>
-    <div class="sec-t">📡 我的订阅 <span class="cnt" id="s-cnt2">0</span> <select id="groupFilter" onchange="renderSubs()" style="margin-left:auto;font:inherit;font-size:12px;background:var(--panel2);color:var(--txt);border:1px solid var(--line);border-radius:var(--r-sm);padding:4px 10px;outline:none"><option value="">全部分组</option></select> <span class="act" style="cursor:pointer;font-size:12px" onclick="checkAllSubs()">⟳ 立即检查</span></div>
+    <div class="sec-t">📡 我的订阅 <span class="cnt" id="s-cnt2">0</span> <select id="groupFilter" onchange="renderSubs()" style="margin-left:auto;font:inherit;font-size:12px;background:var(--panel2);color:var(--txt);border:1px solid var(--line);border-radius:var(--r-sm);padding:4px 10px;outline:none"><option value="">全部分组</option></select> <span class="act" style="cursor:pointer;font-size:12px" onclick="exportGone()" title="把判定为源头已删除的内容导出成 CSV 表格">📤 删帖清单</span> <span class="act" style="cursor:pointer;font-size:12px" onclick="checkAllSubs()">⟳ 立即检查</span></div>
     <div id="subList"><div class="empty">还没有订阅——支持 B站UP主/合集 / YouTube频道 / X用户 / Pixiv / 微博 / Reddit / Instagram / Danbooru 等站点主页</div></div>
     <div class="selbar" id="selBar">
       <span>已选 <b id="selCnt">0</b> 个订阅</span>
@@ -215,6 +215,30 @@
         <button class="btn-mini" onclick="pickOutDir()">更改目录</button>
       </div>
       <div class="desc" style="margin-bottom:0">默认在系统应用数据目录（C 盘）；C 盘空间紧张建议改到 D 盘 · 切换后新任务立即生效，运行中任务不受影响</div>
+    </div>
+
+    <div class="card">
+      <h3>🚦 并发与限速</h3>
+      <div class="desc">同时进行的下载任务越多总速度越快，但太激进容易触发站点风控（被冷却反而更慢）；限速适合「下载时还想玩游戏/开会」的场景。</div>
+      <div class="row">
+        <label>同时下载任务数</label>
+        <select id="maxConcurrentSel" style="max-width:120px;padding:8px 11px;border:1px solid var(--line);border-radius:var(--r-md);font:inherit;background:var(--panel2);color:var(--txt)">
+          <option value="1">1 个（最稳）</option>
+          <option value="2">2 个（默认）</option>
+          <option value="3">3 个</option>
+          <option value="4">4 个</option>
+          <option value="5">5 个（最快）</option>
+        </select>
+      </div>
+      <div class="row" style="margin-bottom:0">
+        <label>下载限速</label>
+        <div style="display:flex;align-items:center;gap:8px;flex:1;max-width:260px">
+          <input id="rateLimitInput" type="number" min="0" max="100" step="1" placeholder="0" style="flex:1;padding:8px 11px;border:1px solid var(--line);border-radius:var(--r-md);font:inherit;background:var(--panel2);color:var(--txt)">
+          <span class="note" style="white-space:nowrap">MB/s（0=不限）</span>
+        </div>
+        <button class="btn-mini" style="color:var(--acc2)" onclick="saveQueue()">💾 保存</button>
+      </div>
+      <div class="note" style="margin:6px 0 0">调小并发立即生效；调大立即补位启动排队任务 · 限速对视频下载（yt-dlp / 直连引擎）生效；图文站（gallery-dl）走请求间隔保护，不限速</div>
     </div>
 
     <div class="card">
@@ -676,6 +700,8 @@ async function loadSettings() {
   $('notifyChk').checked = s.notifyDone !== false;
   $('notifyModeSel').value = s.notifyMode === 'batch' ? 'batch' : 'each';
   $('minFreeInput').value = s.minFreeMB !== undefined ? s.minFreeMB : 1000;
+  $('maxConcurrentSel').value = String(Math.min(5, Math.max(1, s.maxConcurrent || 2)));
+  $('rateLimitInput').value = s.rateLimitMB || 0;
   loadAiConfig();
   $('engineAutoChk').checked = s.engineAutoUpdate !== false;
   $('appVer').textContent = '当前 ' + await window.fetchie.appVersion();
@@ -684,6 +710,18 @@ async function loadSettings() {
 async function saveMinFree() {
   const r = await window.fetchie.settingsSetMinFree(Number($('minFreeInput').value) || 0);
   toast(r.minFreeMB === 0 ? '磁盘保护已关闭' : `磁盘保护已设为 ${r.minFreeMB} MB ✓`);
+}
+// v0.1.9 并发/限速（队列参数进设置页）
+async function saveQueue() {
+  const r = await window.fetchie.settingsSetQueue(Number($('maxConcurrentSel').value) || 2, Number($('rateLimitInput').value) || 0);
+  if (!r.ok) return toast('保存失败');
+  toast(`已保存：同时 ${r.maxConcurrent} 个任务${r.rateLimitMB ? ' · 限速 ' + r.rateLimitMB + ' MB/s' : ' · 不限速'} ✓`);
+}
+// 删帖清单导出（CSV，Excel 可直接打开）
+async function exportGone() {
+  const r = await window.fetchie.subsExportGone();
+  if (!r.ok) { if (r.reason !== '已取消') toast(r.reason); return; }
+  toast(`删帖清单已导出 ✓（${r.count} 条）— ${r.path}`);
 }
 async function doExport() {
   const r = await window.fetchie.settingsExport();

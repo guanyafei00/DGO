@@ -13,8 +13,10 @@ let COOKIE = path.join(__dirname, '..', 'resources', 'cookies.txt');
 let OUTDIR = null;
 let PROXY = null;
 let MIN_FREE_MB = 1000;   // #70①：目标盘剩余空间低于此值任务挂起（0=关闭检测）
-let GDL_CFG = null;   // gallery-dl 配置：stdout/stderr 强制 UTF-8（韩/日/emoji 否则被内部替换成 '???'）
-function configure({ binDir, cookiePath, outDir, proxy, minFreeMB, enginesDir, watchdogTotalMin, watchdogStallMin }) {
+let MAX_CONCURRENT = 2;   // 同时下载任务数（设置页可调 1-5，热更新即时生效）
+let RATE_LIMIT = 0;       // 下载限速字节/秒（0=不限；yt-dlp --limit-rate + 直连引擎节流；gallery-dl 图文站不适用）
+let GDL_CFG = null;   // gallery-dl 配置：stdout/stderr 强制 UTF-8（韩/日/emoji 否则被内部替换成 '???')
+function configure({ binDir, cookiePath, outDir, proxy, minFreeMB, enginesDir, watchdogTotalMin, watchdogStallMin, maxConcurrent, rateLimitMB }) {
   if (binDir) BIN = binDir;
   if (cookiePath) COOKIE = cookiePath;
   if (outDir) OUTDIR = outDir;
@@ -23,6 +25,9 @@ function configure({ binDir, cookiePath, outDir, proxy, minFreeMB, enginesDir, w
   if (enginesDir) ENGINES = enginesDir;
   if (watchdogTotalMin !== undefined) WATCHDOG_TOTAL_MIN = Math.max(0, Number(watchdogTotalMin) || 0);   // 0=关闭
   if (watchdogStallMin !== undefined) WATCHDOG_STALL_MIN = Math.max(0, Number(watchdogStallMin) || 0);   // 0=关闭
+  // 并发热更新：调小立即生效（tick 读模块级值）；调大需外层触发 tick 补位
+  if (maxConcurrent !== undefined) MAX_CONCURRENT = Math.min(5, Math.max(1, Math.floor(Number(maxConcurrent) || 2)));
+  if (rateLimitMB !== undefined) RATE_LIMIT = Math.min(100, Math.max(0, Math.floor(Number(rateLimitMB) || 0))) * 1024 * 1024;
   try {
     GDL_CFG = path.join(path.dirname(COOKIE), 'gdl-utf8.json');
     fs.writeFileSync(GDL_CFG, JSON.stringify({ output: {
@@ -82,7 +87,6 @@ class DownloadQueue {
     this.items = new Map();
     this.order = [];
     this.active = 0;
-    this.max = 2;
     this._heldTimer = null;
   }
 
@@ -233,7 +237,7 @@ class DownloadQueue {
         }
       }
     }
-    while (this.active < this.max) {
+    while (this.active < MAX_CONCURRENT) {   // 并发数热更新：读模块级值，调小立即生效
       const next = this.order.map(i => this.items.get(i))
         .find(it => it.status === 'queued' && !strategy.isBreakered(it.url));
       if (!next) break;
@@ -399,6 +403,8 @@ class DownloadQueue {
       const st = strategy.forUrl(it.url);
       // 注意：yt-dlp 裸 --sleep 有歧义（ambiguous），必须用 --sleep-interval；gallery-dl 才用 --sleep
       if (st.sleep > 0) args.push('--sleep-interval', String(st.sleep), '--sleep-requests', String(Math.max(1, st.sleep)));
+      // 下载限速（设置页可调，0=不限）；--limit-rate 接受 4.2M 这类后缀
+      if (RATE_LIMIT > 0) args.push('--limit-rate', Math.floor(RATE_LIMIT / (1024 * 1024)) + 'M');
       if (PROXY) args.push('--proxy', PROXY);   // YouTube 等被墙站点走用户代理
       if (fs.existsSync(COOKIE)) args.push('--cookies', COOKIE);
       args.push('-P', OUTDIR, it.url);
@@ -497,6 +503,18 @@ class DownloadQueue {
             got += c.length;
             it._lastOutput = Date.now();   // 看门狗：收到数据 = 活着
             if (total) it.progress = Math.min(99, Math.floor(got / total * 100));
+            // 下载限速：每秒配额用完后暂停数据流，1 秒后恢复（1s 粒度对限速足够，不追求平滑）
+            if (RATE_LIMIT > 0) {
+              it._rateBytes = (it._rateBytes || 0) + c.length;
+              if (it._rateBytes >= RATE_LIMIT && !it._ratePaused) {
+                it._ratePaused = true;
+                res.pause();
+                setTimeout(() => {
+                  it._rateBytes = 0; it._ratePaused = false;
+                  if (seq === it._runSeq && it.status === 'downloading') { try { res.resume(); } catch (e) {} }
+                }, 1000);
+              }
+            }
             this.pushThrottled();
           });
           res.on('error', e => fail('网络中断: ' + e.message));
