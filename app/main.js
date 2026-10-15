@@ -286,7 +286,7 @@ app.whenReady().then(() => {
   }
 
   const enginesDir = path.join(userData, 'engines');   // 可写引擎目录：自更新落这里，spawn 优先取新版（外部会审 deepseek #9 变体）
-  configure({ binDir: binDir(), enginesDir, cookiePath, outDir, proxy: settings.get().proxy, minFreeMB: settings.get().minFreeMB });
+  configure({ binDir: binDir(), enginesDir, cookiePath, outDir, proxy: settings.get().proxy, minFreeMB: settings.get().minFreeMB, maxConcurrent: settings.get().maxConcurrent, rateLimitMB: settings.get().rateLimitMB });
   identify.setBinDir(binDir());
   identify.setCookiePath(cookiePath);   // 会审 P1：登录后识别探针也带 cookie（原先断链，登录对识别无效）
   identify.setProxy(settings.get().proxy);
@@ -624,6 +624,15 @@ app.whenReady().then(() => {
     configure({ minFreeMB: mbN });   // 会审 DGO6-Q7：热更新必须调模块级 configure——DownloadQueue 实例没有 reconfigure 方法
     return { ok: true, minFreeMB: mbN };
   });
+  // 并发数/限速设置（v0.1.9：队列参数进设置页，外部会审 long-tail 项）
+  ipcMain.handle('settings:setQueue', (e, { max, rate }) => {
+    const maxN = Math.min(5, Math.max(1, Math.floor(Number(max) || 2)));
+    const rateN = Math.min(100, Math.max(0, Math.floor(Number(rate) || 0)));
+    settings.set({ maxConcurrent: maxN, rateLimitMB: rateN });
+    configure({ maxConcurrent: maxN, rateLimitMB: rateN });
+    try { queue.tick(); } catch (er) {}   // 调大并发立即补位启动排队任务（调小由 tick 自然收敛）
+    return { ok: true, maxConcurrent: maxN, rateLimitMB: rateN };
+  });
   // #70① 数据安全包：导出（用户选路径存 JSON）/ 导入（选文件 → 设置覆盖合并 + 订阅按 URL 合并）
   ipcMain.handle('settings:export', async () => {
     try {
@@ -676,6 +685,11 @@ app.whenReady().then(() => {
             const c = settings.get(); ai.configure({ url: c.aiUrl, key: c.aiKey, model: c.aiModel });
           }
           if (p.minFreeMB !== undefined) configure({ minFreeMB: p.minFreeMB });   // 模块级 configure（实例无 reconfigure）
+          if (p.maxConcurrent !== undefined || p.rateLimitMB !== undefined) {
+            const c = settings.get();
+            configure({ maxConcurrent: c.maxConcurrent, rateLimitMB: c.rateLimitMB });   // v0.1.9：队列参数导入后热更新
+            try { queue.tick(); } catch (er) {}
+          }
           // 会审 DGO6-02③：换目录即时生效（对齐 settings:pickDir：模块级 configure 更新 OUTDIR + library 重挂 outDir）
           if (p.outDir !== undefined) {
             configure({ outDir: p.outDir });
@@ -1049,9 +1063,9 @@ app.whenReady().then(() => {
     return shell.openPath(target).then(err => err ? { ok: false, reason: err } : { ok: true });
   });
   // 「源头已删除」明细 → 对应本地文件：gallery-dl 用动态 id 命名图片、BV 号在视频文件名里，按 id 搜订阅目录
-  ipcMain.handle('subs:goneFiles', (e, { id }) => {
-    const s = subs.get(id);
-    if (!s || !(s.gone || []).length) return { ok: true, files: {} };
+  // 抽成共用函数：UI 角标查询与删帖清单导出（CSV）同源，避免两套逻辑漂移
+  const goneFilesOf = (s) => {
+    if (!s || !(s.gone || []).length) return {};
     const roots = [...new Set(subFolderCandidates(s).filter(d => d && fs.existsSync(d) && fs.statSync(d).isDirectory()))];
     const files = [];
     const walk = (dir, depth) => {
@@ -1069,7 +1083,43 @@ app.whenReady().then(() => {
       const hit = files.filter(f => path.basename(f).includes(gid)).slice(0, 10);
       if (hit.length) map[gid] = hit;
     }
-    return { ok: true, files: map };
+    return map;
+  };
+  ipcMain.handle('subs:goneFiles', (e, { id }) => {
+    const s = subs.get(id);
+    return { ok: true, files: goneFilesOf(s) };
+  });
+  // 删帖清单导出（v0.1.9）：全部订阅的 gone 明细 → CSV（带 BOM，Excel 直接打开中文不乱码）
+  // 列：订阅名 / 类型 / 内容 ID / 源头链接 / 本地文件（; 分隔多文件）/ 本地是否还在
+  ipcMain.handle('subs:exportGone', async () => {
+    try {
+      const rows = [];
+      for (const s of subs.list()) {
+        if (!(s.gone || []).length) continue;
+        const files = goneFilesOf(subs.get(s.id));
+        for (const gid of s.gone) {
+          const local = files[gid] || [];
+          let src = '';
+          try { src = subs.itemUrl(s, { id: gid, type: 'video' }) || subs.itemUrl(s, { id: gid, type: 'text' }) || ''; } catch (e) {}
+          rows.push([s.name || '', s.kind || '', gid, src, local.join(' ; '), local.length ? '在' : '已不在本地']);
+        }
+      }
+      if (!rows.length) return { ok: false, reason: '当前没有被判定为「源头已删除」的内容' };
+      const esc = v => /[",\n]/.test(v) ? '"' + String(v).replace(/"/g, '""') + '"' : String(v);
+      const csv = '\uFEFF订阅名,类型,内容 ID,源头链接,本地文件,本地状态\n'
+        + rows.map(r => r.map(esc).join(',')).join('\n') + '\n';
+      const r = await dialog.showSaveDialog(win, {
+        title: '导出删帖清单',
+        defaultPath: 'DGO-删帖清单-' + new Date().toISOString().slice(0, 10) + '.csv',
+        filters: [{ name: 'CSV 表格', extensions: ['csv'] }],
+      });
+      if (r.canceled || !r.filePath) return { ok: false, reason: '已取消' };
+      fs.writeFileSync(r.filePath, csv, 'utf8');
+      log.info('subs', `导出删帖清单 → ${r.filePath}（${rows.length} 条）`);
+      return { ok: true, path: r.filePath, count: rows.length };
+    } catch (e) {
+      return { ok: false, reason: String(e && e.message || e).slice(0, 120) };
+    }
   });
   ipcMain.handle('subs:resume', (e, { id }) => {   // 会审 P1：暂停的订阅可恢复（#70② 起同时清手动/自动两种暂停）
     const r = subs.get(id);

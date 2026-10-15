@@ -16,6 +16,12 @@ function configure({ file, defaultOutDir }) {
   // #70①：磁盘剩余空间阈值 MB（下载目录所在盘低于该值任务挂起；0=关闭检测；未设置默认 1000）
   if (data.minFreeMB === undefined) data.minFreeMB = 1000;
   else data.minFreeMB = Math.max(0, Math.floor(Number(data.minFreeMB) || 0));
+  // 队列并发数（同时下载任务数 1-5；旧版本无此键 → 默认 2，与历史行为一致）
+  if (data.maxConcurrent === undefined) data.maxConcurrent = 2;
+  else data.maxConcurrent = Math.min(5, Math.max(1, Math.floor(Number(data.maxConcurrent) || 2)));
+  // 下载限速 MB/s（0=不限；仅对视频下载生效——yt-dlp 与直连引擎；gallery-dl 图文站走请求间隔策略不限速）
+  if (data.rateLimitMB === undefined) data.rateLimitMB = 0;
+  else data.rateLimitMB = Math.min(100, Math.max(0, Math.floor(Number(data.rateLimitMB) || 0)));
 }
 
 function get() { return { ...data }; }
@@ -23,6 +29,9 @@ function set(patch) {
   const p = { ...(patch || {}) };
   // 会审 DGO6-08：minFreeMB 写入前归一化（负数/非数字归 0＝关闭检测；与 configure 启动路径同规则）
   if (p.minFreeMB !== undefined) p.minFreeMB = Math.max(0, Math.floor(Number(p.minFreeMB) || 0));
+  // 并发/限速归一化（与 configure 同规则，双保险）
+  if (p.maxConcurrent !== undefined) p.maxConcurrent = Math.min(5, Math.max(1, Math.floor(Number(p.maxConcurrent) || 2)));
+  if (p.rateLimitMB !== undefined) p.rateLimitMB = Math.min(100, Math.max(0, Math.floor(Number(p.rateLimitMB) || 0)));
   Object.assign(data, p);
   try { atomicWrite(FILE, JSON.stringify(data, null, 2)); } catch (e) { console.warn('[settings] save fail:', e.message); }
   return get();
