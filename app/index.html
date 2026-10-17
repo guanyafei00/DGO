@@ -254,6 +254,14 @@
         <button class="btn-mini" onclick="importCookies()">📥 导入 cookies.txt</button>
         <button class="btn-mini" onclick="openCookieDir()">📂 打开文件位置</button>
       </div>
+      <div class="row" style="margin:12px 0 0">
+        <label>Pixiv 授权</label>
+        <div style="flex:1;display:flex;align-items:center;gap:8px">
+          <button class="btn-mini" onclick="pixivAuthorize()">🎨 Pixiv 授权（一次性）</button>
+          <span id="pixivState" class="note"></span>
+        </div>
+      </div>
+      <div class="note" style="margin:6px 0 0">Pixiv 下载不走 cookie（官方接口只认 OAuth refresh-token，实测带 cookie 照样被拒）。点上面按钮弹出 Pixiv 官方登录窗，登录成功即自动完成授权——之后 Pixiv 订阅和下载全部可用。token 只存本机。</div>
     </div>
 
     <div class="card">
@@ -699,7 +707,7 @@ function switchPage(p) {
   // 每次进媒体库都强制重扫磁盘：文件夹里手动删/加了文件也要如实反映（本地扫描快，分片异步不卡 UI）
   if (p === 'lib') { libDirty = false; loadLibrary(true); }
   if (p === 'strategy') loadStrategy();
-  if (p === 'settings') { loadSettings(); loadCookieInfo(); loadAsr().then(initMirrorSelect).catch(() => {}); loadEngines(); }
+  if (p === 'settings') { loadSettings(); loadCookieInfo(); loadPixivState(); loadAsr().then(initMirrorSelect).catch(() => {}); loadEngines(); }
 }
 
 // ===== 设置：下载目录 =====
@@ -870,6 +878,23 @@ async function openCookieDir() {
   if (r && !r.ok) toast('打开失败：' + r.reason);
 }
 
+// ===== Pixiv OAuth 授权 =====
+async function loadPixivState() {
+  try {
+    const r = await window.fetchie.pixivState();
+    const el = $('pixivState');
+    if (!el) return;
+    el.textContent = r.authorized ? '✓ 已授权' + (r.userName ? '：' + r.userName : '') : '未授权';
+    el.style.color = r.authorized ? 'var(--green)' : 'var(--txt2)';
+  } catch (e) {}
+}
+async function pixivAuthorize() {
+  toast('已打开 Pixiv 官方登录窗，登录成功后自动完成授权…');
+  const r = await window.fetchie.pixivLogin();
+  if (r.ok) { toast('Pixiv 授权成功 ✓（' + (r.userName || '已登录') + '）'); loadPixivState(); }
+  else if (r.reason !== '已取消') toast('Pixiv 授权失败：' + r.reason);
+}
+
 // ===== 订阅 =====
 let subsItems = [];
 let _goneFilesMap = {};   // subId -> { goneId: [本地文件路径...] }
@@ -896,6 +921,7 @@ function refreshNavCounts() {
 // 订阅检查失败原因 → 人话（gallery-dl 原始报错对用户是黑话：HttpError 401、AuthenticationError…）
 function friendlySubFail(m) {
   const s = String(m || '');
+  if (/refresh-token/i.test(s)) return '需要 Pixiv 授权（设置 → Cookie 管理 → Pixiv 授权，一次性操作）';   // Pixiv 专用：它的报错是 'refresh-token' required，与 cookie 无关，必须排在 cookie 映射前面
   if (/401|Unauthorized|AuthenticationError|refresh-token|PHPSESSID|cookies?\s*(required|expired|invalid)|login/i.test(s)) return '需要登录 Cookie（设置 → Cookie 管理，导入该站点 cookies.txt）';
   if (/timed?\s?out|ETIMEDOUT|ECONNRESET|ECONNREFUSED|socket hang up/i.test(s)) return '网络超时或中断，稍后自动重试';
   if (/429|rate.?limit|Too Many/i.test(s)) return '触发站点限流，冷却后自动重试';

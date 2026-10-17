@@ -18,6 +18,8 @@ let BIN = null;
 let FILE = null;
 let PROXY = null;
 let GDL_CFG = null;   // gallery-dl 配置：stdout/stderr 强制 UTF-8（否则韩/日/emoji 被内部替换成字面 '???',环境变量救不回）
+let PIXIV_AUTH = null;   // pixiv-auth.json：OAuth refresh_token 存放处（cookie 对 Pixiv 完全无效，见 lib/pixivauth.js）
+let PIXIV_CFG = null;    // gdl-pixiv.json：gallery-dl 的 refresh-token 配置（授权后由 pixivauth 写入）
 let subs = [];
 
 function configure({ binDir, cookiePath, file }) {
@@ -31,12 +33,20 @@ function configure({ binDir, cookiePath, file }) {
       stderr: { encoding: 'utf-8', errors: 'replace' },
     } }));
   } catch (e) { GDL_CFG = null; console.warn('[subs] gdl config write fail:', e.message); }
+  PIXIV_AUTH = path.join(path.dirname(FILE), 'pixiv-auth.json');
+  PIXIV_CFG = path.join(path.dirname(FILE), 'gdl-pixiv.json');
 }
-// gallery-dl 启动参数前缀：配置文件先行（所有 spawn 共用）
+// gallery-dl 启动参数前缀：配置文件先行（所有 spawn 共用）。
+// gdl-pixiv.json 只在已授权后存在 → spawn 时才查，授权即时生效不用重启
 function gdlBaseArgs() {
   const args = [];
   if (GDL_CFG) args.push('--config', GDL_CFG);
+  if (PIXIV_CFG && fs.existsSync(PIXIV_CFG)) args.push('--config', PIXIV_CFG);
   return args;
+}
+// Pixiv 是否已 OAuth 授权（gallery-dl 的 Pixiv 通道只认 refresh-token，2026-10-17 实测）
+function pixivAuthorized() {
+  try { return !!JSON.parse(fs.readFileSync(PIXIV_AUTH, 'utf-8')).refresh_token; } catch (e) { return false; }
 }
 function setProxy(p) { PROXY = p || null; }
 function save() { try { atomicWrite(FILE, JSON.stringify(subs, null, 2)); } catch (e) { console.warn('[subs] save fail:', e.message); } }
@@ -166,7 +176,10 @@ function add(url, name) {
   if ((c.kind === 'gdl' || c.kind === 'x') && !name) {
     let host = '';
     try { host = new URL(sub.url).hostname.toLowerCase(); } catch (e) {}
-    if (GUEST_HOSTILE.some(h => host.includes(h)) && !cookieDomains().some(d => host.includes(d))) {
+    if (host.includes('pixiv.net')) {
+      // Pixiv 特殊：cookie 完全无效（官方接口只认 OAuth refresh-token），有 cookie 也要走授权
+      if (!pixivAuthorized()) warning = 'Pixiv 无法用 cookie 下载（官方接口只认 OAuth refresh-token）：设置 → Cookie 管理 → Pixiv 授权（一次性，登录即完成）';
+    } else if (GUEST_HOSTILE.some(h => host.includes(h)) && !cookieDomains().some(d => host.includes(d))) {
       warning = '该站点需要登录 Cookie 才能检查更新：设置 → Cookie 管理，导入该站点的 cookies.txt 后再点订阅卡片的 ⟳';
     }
   }
@@ -508,4 +521,4 @@ function itemUrl(sub, it) {
   return null;
 }
 
-module.exports = { configure, list, get, add, remove, update, checkSub, itemUrl, backfill, setProxy, refreshName, onNameChange, save, classify, resetCookieCache };
+module.exports = { configure, list, get, add, remove, update, checkSub, itemUrl, backfill, setProxy, refreshName, onNameChange, save, classify, resetCookieCache, gdlBaseArgs, pixivAuthorized };

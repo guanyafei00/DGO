@@ -26,6 +26,7 @@ const store = require('./lib/store');
 const subs = require('./lib/subs');
 const library = require('./lib/library');
 const login = require('./lib/login');
+const pixivauth = require('./lib/pixivauth');
 const settings = require('./lib/settings');
 const asr = require('./lib/asr');
 const { runEngine } = require('./lib/engine_probe');
@@ -869,6 +870,14 @@ app.whenReady().then(() => {
     return { ok: true };
   });
 
+  // ===== Pixiv OAuth 授权（gallery-dl 的 Pixiv 通道只认 refresh-token，cookie 完全无效——2026-10-17 实测）=====
+  ipcMain.handle('pixiv:login', async () => {
+    const r = await pixivauth.pixivLogin(userData, { cookieFile: cookieFile(), proxy: settings.get().proxy });
+    if (r.ok) log.info('subs', `Pixiv 授权成功：${r.userName || ''}`);
+    return r;
+  });
+  ipcMain.handle('pixiv:state', () => pixivauth.pixivState(userData));
+
   // ===== 媒体库（只读索引，永不删除文件）=====
   ipcMain.handle('library:scan', async () => {
     const r = await library.scan();
@@ -966,7 +975,12 @@ app.whenReady().then(() => {
         if (onlyId && sub.id !== onlyId) continue;
         const real = subs.get(sub.id);
         if (real.userPaused) { results.push({ id: sub.id, ok: false, reason: '已暂停（手动）' }); continue; }   // #70②
-        if (real.paused) { results.push({ id: sub.id, ok: false, reason: '已暂停（连续失败）' }); continue; }
+        if (real.paused) {
+          // 手动单查自动解除连续失败暂停：cookie/授权修好后用户点 ⟳ 应立即生效，而非强制先点 ▶ 恢复。
+          // 根因场景：IG 订阅在没 cookie 时期被 failStreak≥3 自动暂停，cookie 导入后点 ⟳ 仍被这里拦住（主人 2026-10-17 实测）
+          if (onlyId === sub.id) { real.paused = false; real.failStreak = 0; real.lastError = null; subs.save(); }
+          else { results.push({ id: sub.id, ok: false, reason: '已暂停（连续失败）' }); continue; }
+        }
         // #70② 频率档位：订阅可设更长间隔（10/30/60 分钟）；手动单查（onlyId）不受限
         if (!onlyId && real.intervalMin > CHECK_INTERVAL_MS / 60000 &&
             Date.now() - (real.lastCheck || 0) < real.intervalMin * 60 * 1000) {

@@ -61,3 +61,6 @@ app/.npmcache/
 app/resources/gdl-utf8.json
 run_install.py
 dgo-setup-sha.txt
+
+# 调试测试目录（含真实 cookie 副本/引擎二进制/源码逆向产物，绝不入库）
+_gdl_test/

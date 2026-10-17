@@ -16,6 +16,7 @@ let MIN_FREE_MB = 1000;   // #70①：目标盘剩余空间低于此值任务挂
 let MAX_CONCURRENT = 2;   // 同时下载任务数（设置页可调 1-5，热更新即时生效）
 let RATE_LIMIT = 0;       // 下载限速字节/秒（0=不限；yt-dlp --limit-rate + 直连引擎节流；gallery-dl 图文站不适用）
 let GDL_CFG = null;   // gallery-dl 配置：stdout/stderr 强制 UTF-8（韩/日/emoji 否则被内部替换成 '???')
+let PIXIV_CFG = null;   // gdl-pixiv.json：Pixiv OAuth refresh-token 配置（授权后存在，spawn 时才查 → 即时生效）
 function configure({ binDir, cookiePath, outDir, proxy, minFreeMB, enginesDir, watchdogTotalMin, watchdogStallMin, maxConcurrent, rateLimitMB }) {
   if (binDir) BIN = binDir;
   if (cookiePath) COOKIE = cookiePath;
@@ -35,10 +36,13 @@ function configure({ binDir, cookiePath, outDir, proxy, minFreeMB, enginesDir, w
       stderr: { encoding: 'utf-8', errors: 'replace' },
     } }));
   } catch (e) { GDL_CFG = null; console.warn('[queue] gdl config write fail:', e.message); }
+  PIXIV_CFG = path.join(path.dirname(COOKIE), 'gdl-pixiv.json');
 }
 // gallery-dl 启动参数前缀（所有 spawn 共用）
 function gdlBaseArgs() {
-  return GDL_CFG ? ['--config', GDL_CFG] : [];
+  const args = GDL_CFG ? ['--config', GDL_CFG] : [];
+  if (PIXIV_CFG && fs.existsSync(PIXIV_CFG)) args.push('--config', PIXIV_CFG);
+  return args;
 }
 
 // 引擎错误分类：识别风控/限流信号（词边界防误判：避免匹配到文件大小「412MB」之类）

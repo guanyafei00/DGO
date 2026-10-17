@@ -53,6 +53,8 @@ contextBridge.exposeInMainWorld('fetchie', {
   cookieInfo: () => ipcRenderer.invoke('cookie:info'),
   cookieImport: () => ipcRenderer.invoke('cookie:import'),
   cookieOpenDir: () => ipcRenderer.invoke('cookie:openDir'),
+  pixivLogin: () => ipcRenderer.invoke('pixiv:login'),
+  pixivState: () => ipcRenderer.invoke('pixiv:state'),
   asrModels: () => ipcRenderer.invoke('asr:models'),
   asrSetMirror: (id) => ipcRenderer.invoke('asr:setMirror', { id }),
   asrDownload: (id) => ipcRenderer.invoke('asr:download', { id }),
