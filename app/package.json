@@ -16,7 +16,7 @@
     "electron-builder": "^25.1.8"
   },
   "build": {
-    "appId": "com.workbuddy.dgo",
+    "appId": "com.guanyafei.dgo",
     "productName": "DGO",
     "files": [
       "main.js",

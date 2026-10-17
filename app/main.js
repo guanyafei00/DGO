@@ -42,11 +42,11 @@ const { atomicWrite } = require('./lib/jsonfile');   // 迁移包导出防半截
 const CHECK_INTERVAL_MS = 10 * 60 * 1000;   // 每站 10 分钟增量检查
 const RULES_INTERVAL_MS = 6 * 3600 * 1000;  // 远程风控规则 6 小时拉一轮
 // 默认规则服务端（静态 JSON，随规则变更直接更新线上文件）；FETCHIE_RULES_URL 环境变量可覆盖
-const RULES_URL = process.env.FETCHIE_RULES_URL || 'https://fetchie-rules.app.workbuddy.host/rules.json';
+const RULES_URL = process.env.FETCHIE_RULES_URL || 'https://guanyafei00.github.io/fetchie-rules/rules.json';
 let _rulesVersion = null;   // 最近一次成功应用的远程规则版本（UI 展示用）
 // 出厂预置更新源（A4 决策 2026-10-10：主人接受「每次发版同步更新线上 update.json」义务）
 // 用户在设置页自己填的 updateUrl 优先于预置值；每次发版流程：签 update.json → 部署到该地址
-const UPDATE_URL_PRESET = 'https://fetchie-rules.app.workbuddy.host/update.json';
+const UPDATE_URL_PRESET = 'https://guanyafei00.github.io/fetchie-rules/update.json';
 
 async function refreshRemoteRules() {
   try {
