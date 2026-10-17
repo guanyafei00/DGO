@@ -81,7 +81,7 @@ function downloadModel(id, onProgress) {
     const tmp = modelPath(id) + '.part';
     const go = (u, redirectLeft) => {
       const req = https.get(u, res => {
-        res.on('error', reject);   // 会审 P1：网络半途断开不再变未捕获异常
+        res.on('error', reject);   // 网络半途断开不再变未捕获异常
         if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location && redirectLeft > 0) {
           res.resume();
           return go(urlMod.resolve(u, res.headers.location), redirectLeft - 1);   // 相对重定向也兜住
@@ -134,7 +134,7 @@ function transcribe(mediaPath, opts = {}) {
     if (!fs.existsSync(cli)) return reject(new Error('whisper-cli.exe 缺失'));
 
     fs.mkdirSync(MODELS_DIR, { recursive: true });
-    // 1) ffmpeg 提 16kHz 单声道 wav（whisper 要求）。会审 B5：加超时——挂死的 ffmpeg 不再永久卡住转写队列
+    // 1) ffmpeg 提 16kHz 单声道 wav（whisper 要求）。加超时——挂死的 ffmpeg 不再永久卡住转写队列
     const ff = spawn(ffmpeg, ['-y', '-i', mediaPath, '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', wav], { windowsHide: true });
     let ffErr = '';
     const ffTimer = setTimeout(() => { try { ff.kill('SIGKILL'); } catch (e) {} }, 10 * 60 * 1000);   // 10 分钟足够提完几个小时的音轨
@@ -143,7 +143,7 @@ function transcribe(mediaPath, opts = {}) {
     ff.on('close', code => {
       clearTimeout(ffTimer);
       if (code !== 0) {
-        try { fs.unlinkSync(wav); } catch (e) {}   // 会审 P2：提取失败不残留临时 wav
+        try { fs.unlinkSync(wav); } catch (e) {}   // 提取失败不残留临时 wav
         return reject(new Error('音频提取失败: ' + ffErr.slice(-150)));
       }
       // 2) whisper-cli 转写（-pp 进度；-osrt -otxt 双输出到媒体同目录）
@@ -151,7 +151,7 @@ function transcribe(mediaPath, opts = {}) {
       if (opts.language && opts.language !== 'auto') args.push('--prompt', '以下是普通话的句子。');   // 中文提示提升断句
       const child = spawn(cli, args, { windowsHide: true });
       let out = '', err = '', lastPct = 0;
-      // 会审 B5：转写总超时 30 分钟——超长文件/CPU 过载导致的挂死不再永久占住串行队列
+      // 转写总超时 30 分钟——超长文件/CPU 过载导致的挂死不再永久占住串行队列
       const wTimer = setTimeout(() => {
         try { child.kill('SIGKILL'); } catch (e) {}
         try { fs.unlinkSync(wav); } catch (e) {}

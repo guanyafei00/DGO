@@ -1,4 +1,4 @@
-// 管道输出编码探测（会审 P2 修复）：中文 Windows = GBK(936)；
+// 管道输出编码探测（中文 Windows = GBK(936)；
 // 用户开启「UTF-8 全球语言支持」beta(65001) 或非中文 locale 时输出编码不同。
 // 启动时探测一次 chcp，此后全局复用。探测是异步的，完成前的首次解码回落默认 gbk。
 const { spawn } = require('child_process');

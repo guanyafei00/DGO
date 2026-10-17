@@ -4,7 +4,7 @@ if (process.env.DGO_CAPTURE) app.disableHardwareAcceleration();
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
-const { spawn } = require('child_process');   // 会审 DGO-001：app:applyUpdate 静默安装用，之前漏 import 导致自更新必炸
+const { spawn } = require('child_process');   // app:applyUpdate 静默安装用，之前漏 import 导致自更新必炸
 
 // GPU 崩溃保护：核显/驱动异常机器上降级为软件渲染（实测 0xC0000005 GPU 进程崩溃）
 app.disableHardwareAcceleration();
@@ -37,7 +37,7 @@ const source = require('./lib/source');
 const srtLib = require('./lib/srt');
 const backup = require('./lib/backup');
 const textindex = require('./lib/textindex');
-const { atomicWrite } = require('./lib/jsonfile');   // 会审 DGO6-15①：迁移包导出防半截文件
+const { atomicWrite } = require('./lib/jsonfile');   // 迁移包导出防半截文件
 
 const CHECK_INTERVAL_MS = 10 * 60 * 1000;   // 每站 10 分钟增量检查
 const RULES_INTERVAL_MS = 6 * 3600 * 1000;  // 远程风控规则 6 小时拉一轮
@@ -108,7 +108,7 @@ function createWindow() {
   const capture = !!process.env.DGO_CAPTURE;
   win = new BrowserWindow({
     width: 1180, height: 800,
-    minWidth: 940, minHeight: 640,   // 会审 P1：防止缩到极小破版
+    minWidth: 940, minHeight: 640,   // 防止缩到极小破版
     icon: appIconPath(),
     webPreferences: { preload: path.join(__dirname, 'preload.js') }
   });
@@ -179,7 +179,7 @@ function createWindow() {
     // 看门狗：90 秒无论如何退出，绝不挂死
     setTimeout(() => { console.error('[capture] watchdog 90s 强制退出'); app.exit(1); }, 90000);
   }
-  // 导航锁（会审 P1）：渲染层失守也不许导航去外站——preload 不在外部页面重新注入，IPC 暴露面收住
+  // 导航锁（渲染层失守也不许导航去外站——preload 不在外部页面重新注入，IPC 暴露面收住
   win.webContents.on('will-navigate', (e, url) => { if (!url.startsWith('file://')) e.preventDefault(); });
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   // 右键菜单（Electron 默认无）：输入框/可编辑区提供 剪切/复制/粘贴/全选（主人反馈：粘贴栏不支持右键粘贴）
@@ -202,7 +202,7 @@ function createWindow() {
     if (quitting) return;
     if (!tray) { quitting = true; app.quit(); return; }   // 托盘创建失败降级：关窗即退出，防「不可见又退不出」
     const act = settings.get().closeAction;   // 'minimize' | 'exit' | 未设置
-    if (act === 'exit') { quitting = true; return; }   // 会审 A1：已记住「直接退出」也必须置位 quitting，否则关窗后 window-all-closed 不触发 app.quit，应用变成无窗口僵尸
+    if (act === 'exit') { quitting = true; return; }   // 已记住「直接退出」也必须置位 quitting，否则关窗后 window-all-closed 不触发 app.quit，应用变成无窗口僵尸
     e.preventDefault();
     if (act === 'minimize') { win.hide(); return; }   // 已记住「最小化」：直接隐藏
     const { response, checkboxChecked } = await dialog.showMessageBox(win, {
@@ -235,12 +235,12 @@ function createWindow() {
 // 单实例锁：托盘常驻后双击图标容易重复启动
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) { app.quit(); } else {
-app.on('second-instance', () => { if (win && !win.isDestroyed()) { if (win.isMinimized()) win.restore(); win.show(); win.focus(); } });   // 会审 A1：窗口可能已销毁，isDestroyed 守卫防 TypeError
+app.on('second-instance', () => { if (win && !win.isDestroyed()) { if (win.isMinimized()) win.restore(); win.show(); win.focus(); } });   // 窗口可能已销毁，isDestroyed 守卫防 TypeError
 
 app.whenReady().then(() => {
   const userData = app.getPath('userData');
 
-  // 改名迁移：Fetchie → DGO，旧 %APPDATA%\Fetchie 的数据一次性搬入（会审 P1 加固：
+  // 改名迁移：Fetchie → DGO，旧 %APPDATA%\Fetchie 的数据一次性搬入（
   // 逐文件断点续迁 + 完成写标记 + 旧目录改名封存（内含明文 cookies.txt，凭证不散落））
   try {
     const legacy = path.join(path.dirname(userData), 'Fetchie');
@@ -266,12 +266,12 @@ app.whenReady().then(() => {
     }
   } catch (e) { console.log('[migrate] 迁移失败(不影响启动):', e.message); }
 
-  // 默认下载目录：系统「视频」文件夹下的 DGO（会审 P0：藏 AppData 用户找不到文件）。
+  // 默认下载目录：系统「视频」文件夹下的 DGO（藏 AppData 用户找不到文件）。
   // 已有 settings.json 的老用户不受影响（其 outDir 优先）。
   let videosDir = null;
   try { videosDir = app.getPath('videos'); } catch (e) {}
   settings.configure({ file: path.join(userData, 'settings.json'), defaultOutDir: path.join(videosDir || userData, 'DGO') });
-  log.init(path.join(userData, 'logs'));   // 会审 T3：关键事件落盘 userData/logs/，保留 7 天
+  log.init(path.join(userData, 'logs'));   // 关键事件落盘 userData/logs/，保留 7 天
   const sc = settings.get();
   ai.configure({ url: sc.aiUrl, key: sc.aiKey, model: sc.aiModel });   // BYOK：OpenAI 兼容接口
   const outDir = settings.get().outDir;   // 下载目录：settings.json 可覆盖默认 userData/downloads
@@ -285,10 +285,10 @@ app.whenReady().then(() => {
     try { fs.copyFileSync(legacyCookie, cookiePath); } catch (e) {}
   }
 
-  const enginesDir = path.join(userData, 'engines');   // 可写引擎目录：自更新落这里，spawn 优先取新版（外部会审 deepseek #9 变体）
+  const enginesDir = path.join(userData, 'engines');   // 可写引擎目录：自更新落这里，spawn 优先取新版
   configure({ binDir: binDir(), enginesDir, cookiePath, outDir, proxy: settings.get().proxy, minFreeMB: settings.get().minFreeMB, maxConcurrent: settings.get().maxConcurrent, rateLimitMB: settings.get().rateLimitMB });
   identify.setBinDir(binDir());
-  identify.setCookiePath(cookiePath);   // 会审 P1：登录后识别探针也带 cookie（原先断链，登录对识别无效）
+  identify.setCookiePath(cookiePath);   // 登录后识别探针也带 cookie（原先断链，登录对识别无效）
   identify.setProxy(settings.get().proxy);
   strategy.configure({ stateFile: path.join(userData, 'site-state.json') });
   refreshRemoteRules();
@@ -303,7 +303,7 @@ app.whenReady().then(() => {
     onPersist: patch => settings.set(patch)   // 默认模型持久化到 settings.json
   });
   asr.restoreActive(settings.get().asrModel);   // 恢复上次选的默认模型
-  if (settings.get().asrMirror) asr.setMirror(settings.get().asrMirror);   // 会审 B9：恢复持久化的模型下载源
+  if (settings.get().asrMirror) asr.setMirror(settings.get().asrMirror);   // 恢复持久化的模型下载源
 
   // 转写串行队列：同一时间只跑一个 whisper，避免 CPU 打爆
   let asrChain = Promise.resolve();
@@ -314,9 +314,9 @@ app.whenReady().then(() => {
     })).then(r => {
       if (win && !win.isDestroyed()) win.webContents.send('asr:done', { filePath: mediaPath, ...r });
       if (win && !win.isDestroyed()) win.webContents.send('library:changed');
-      // 会审 DGO6-10：即时 textindex.reindex 已移除——library:scan 里的 reindex 用媒体库分组的
+      // 即时 textindex.reindex 已移除——library:scan 里的 reindex 用媒体库分组的
       // g.uploader 作权威 up；此处按父目录猜 up 在三级目录结构下会错记且 mtime 不变永不修正
-      // 会审 DGO6-15③：通知分支补 win 存活守卫（对齐同块其余分支）
+      // 通知分支补 win 存活守卫（对齐同块其余分支）
       if (win && !win.isDestroyed() && (!win.isVisible() || win.isMinimized()) && Notification.isSupported()) {
         const n = new Notification({ title: '转写完成 ✓', body: path.basename(mediaPath), silent: false });
         n.on('click', () => { if (win && !win.isDestroyed()) { win.show(); win.focus(); } });
@@ -420,7 +420,7 @@ app.whenReady().then(() => {
       if (freshDone && win && !win.isDestroyed()) {
         win.webContents.send('library:changed');
         // 完成通知（设置页可关/选模式）：notifyMode=each 单项即通知 / batch 全部下载完成后统一通知。
-        // 仅窗口隐藏/最小化时弹通知（前台时不打扰）；body 带保存位置（会审 P0-1 配套）
+        // 仅窗口隐藏/最小化时弹通知（前台时不打扰）；body 带保存位置（
         const sc = settings.get();
         const notifyOn = sc.notifyDone !== false;
         if (sc.notifyMode === 'batch') {
@@ -574,7 +574,7 @@ app.whenReady().then(() => {
     if (!remote) return { ok: false, reason: '更新源格式错误（需要 {"version":"x.y.z","url":"安装包下载地址"}）' };
     // 发布闸门③：更新清单必须带 Ed25519 签名，验证失败一律拒绝（防更新通道劫持 = 持久化 RCE）
     if (!updateSign.verify(j)) return { ok: false, reason: '更新清单签名校验失败（非官方发布或被篡改），已拒绝' };
-    // 会审 DGO-004：验签通过的清单留存在主进程，安装路径只信这份，不信渲染层回传参数
+    // 验签通过的清单留存在主进程，安装路径只信这份，不信渲染层回传参数
     _verifiedUpdate = { version: remote, url: j.url || '', sha256: j.sha256 || '' };
     const hasUpdate = cmpVer(remote, app.getVersion()) > 0;
     return { ok: true, hasUpdate, version: remote, current: app.getVersion(), url: j.url || '', notes: j.notes || '', page: j.page || '', sha256: j.sha256 || '' };
@@ -585,7 +585,7 @@ app.whenReady().then(() => {
   ipcMain.handle('app:version', () => app.getVersion());
   ipcMain.handle('app:checkUpdate', () => appCheckUpdate());
   // 下载新版安装包 → 静默安装到当前目录 → 自动重启（NSIS /S /D=）
-  // 会审 DGO-004：url/sha256 一律取自主进程留存验签后的清单，忽略渲染层回传（防渲染层失守被静默装包）
+  // url/sha256 一律取自主进程留存验签后的清单，忽略渲染层回传（防渲染层失守被静默装包）
   let _verifiedUpdate = null;
   ipcMain.handle('app:applyUpdate', async () => {
     const mu = _verifiedUpdate;
@@ -598,11 +598,11 @@ app.whenReady().then(() => {
     const size = fs.existsSync(inst) ? fs.statSync(inst).size : 0;
     if (size < 10 * 1024 * 1024) { try { fs.unlinkSync(inst); } catch (e2) {} return { ok: false, reason: '安装包异常（' + Math.round(size / 1048576) + 'MB），已取消' }; }
     // 发布闸门③：安装包 sha256 与签名清单核对，不一致即销毁
-    if (!(await updateSign.sha256ok(inst, mu.sha256))) {   // 流式版改为 async（外部会审 deepseek #10）
+    if (!(await updateSign.sha256ok(inst, mu.sha256))) {   // 流式版改为 async（外部
       try { fs.unlinkSync(inst); } catch (e2) {}
       return { ok: false, reason: '安装包哈希校验失败（可能被篡改或下载损坏），已取消安装' };
     }
-    // 会审 DGO-016：NSIS /D= 必须不带引号（含空格目录也裸写），改用 shell 串拼装
+    // NSIS /D= 必须不带引号（含空格目录也裸写），改用 shell 串拼装
     const dir = path.dirname(process.execPath).replace(/[\\"]+$/, '');
     const child = spawn(`"${inst}" /S /D=${dir}`, { detached: true, stdio: 'ignore', shell: true });
     child.unref();
@@ -621,10 +621,10 @@ app.whenReady().then(() => {
   ipcMain.handle('settings:setMinFree', (e, { mb }) => {
     const mbN = Math.max(0, Math.floor(Number(mb) || 0));
     settings.set({ minFreeMB: mbN });
-    configure({ minFreeMB: mbN });   // 会审 DGO6-Q7：热更新必须调模块级 configure——DownloadQueue 实例没有 reconfigure 方法
+    configure({ minFreeMB: mbN });   // 热更新必须调模块级 configure——DownloadQueue 实例没有 reconfigure 方法
     return { ok: true, minFreeMB: mbN };
   });
-  // 并发数/限速设置（v0.1.9：队列参数进设置页，外部会审 long-tail 项）
+  // 并发数/限速设置（v0.1.9：队列参数进设置页，外部
   ipcMain.handle('settings:setQueue', (e, { max, rate }) => {
     const maxN = Math.min(5, Math.max(1, Math.floor(Number(max) || 2)));
     const rateN = Math.min(100, Math.max(0, Math.floor(Number(rate) || 0)));
@@ -644,7 +644,7 @@ app.whenReady().then(() => {
       if (r.canceled || !r.filePath) return { ok: false, reason: '已取消' };
       const bundle = backup.collect({ settingsFile: path.join(app.getPath('userData'), 'settings.json'), subsFile: path.join(app.getPath('userData'), 'subs.json') });
       if (!bundle.ok) return bundle;
-      atomicWrite(r.filePath, JSON.stringify(bundle.bundle, null, 2));   // 会审 DGO6-15①：tmp+rename，磁盘满不再留半截 JSON
+      atomicWrite(r.filePath, JSON.stringify(bundle.bundle, null, 2));   // tmp+rename，磁盘满不再留半截 JSON
       log.info('backup', `导出迁移包 → ${r.filePath}（${bundle.counts.subs} 个订阅）`);
       return { ok: true, file: r.filePath, counts: bundle.counts };
     } catch (e) { return { ok: false, reason: e.message }; }
@@ -657,7 +657,7 @@ app.whenReady().then(() => {
       });
       if (r.canceled || !r.filePaths || !r.filePaths[0]) return { ok: false, reason: '已取消' };
       const bundle = JSON.parse(fs.readFileSync(r.filePaths[0], 'utf-8'));
-      // 会审 DGO6-15②：导入前明示影响面（覆盖设置项数 / 订阅数 / AI 密钥），用户确认才执行
+      // 导入前明示影响面（覆盖设置项数 / 订阅数 / AI 密钥），用户确认才执行
       const bs = (bundle && bundle.settings) || {};
       const pendingKeys = backup.SETTINGS_KEYS.filter(k => bs[k] !== undefined && bs[k] !== null && bs[k] !== '');
       const pendingSubs = Array.isArray(bundle.subs) ? bundle.subs.filter(x => x && typeof x === 'object' && String(x.url || '').trim()).length : 0;
@@ -670,12 +670,12 @@ app.whenReady().then(() => {
         defaultId: 0, cancelId: 0, noLink: true,
       });
       if (mb.response !== 1) return { ok: false, reason: '已取消' };
-      const setterErrors = [];   // 会审 DGO6-02②：settingsSetter 内校验失败的键经此上报（apply 的 errors 数组此时还没返回）
+      const setterErrors = [];   // settingsSetter 内校验失败的键经此上报（apply 的 errors 数组此时还没返回）
       let droppedOutDir = false;
       const out = await backup.apply(bundle, {
         settingsSetter: patch => {
           const p = { ...patch };
-          // 会审 DGO6-02②：outDir 导入前先过目录校验，失败剔除该键（不写坏目录）
+          // outDir 导入前先过目录校验，失败剔除该键（不写坏目录）
           if (p.outDir !== undefined) {
             const v = settings.validateDir(p.outDir);
             if (!v.ok) { delete p.outDir; droppedOutDir = true; setterErrors.push('outDir: 目录不可写（' + v.reason + '），已保留当前下载目录'); }
@@ -690,7 +690,7 @@ app.whenReady().then(() => {
             configure({ maxConcurrent: c.maxConcurrent, rateLimitMB: c.rateLimitMB });   // v0.1.9：队列参数导入后热更新
             try { queue.tick(); } catch (er) {}
           }
-          // 会审 DGO6-02③：换目录即时生效（对齐 settings:pickDir：模块级 configure 更新 OUTDIR + library 重挂 outDir）
+          // 换目录即时生效（对齐 settings:pickDir：模块级 configure 更新 OUTDIR + library 重挂 outDir）
           if (p.outDir !== undefined) {
             configure({ outDir: p.outDir });
             library.configure({ outDir: p.outDir, sourceGet: pp => source.get(pp) });
@@ -698,7 +698,7 @@ app.whenReady().then(() => {
         },
         subsAdd: (url, name, extra) => {
           const a = subs.add(url, name);
-          // 会审 DGO6-03：迁移包内订阅属性（分组/频率/暂停/自动转写）随添加恢复；subs.update 白名单钳制类型
+          // 迁移包内订阅属性（分组/频率/暂停/自动转写）随添加恢复；subs.update 白名单钳制类型
           if (a.ok && extra && typeof extra === 'object') {
             const u = subs.update(a.sub.id, extra);
             if (u && u.ok && u.sub) a.sub = { ...a.sub, group: u.sub.group, intervalMin: u.sub.intervalMin, userPaused: u.sub.userPaused, autoTranscribe: u.sub.autoTranscribe };
@@ -718,13 +718,13 @@ app.whenReady().then(() => {
   });
   // #70③ 文稿全文搜索
   ipcMain.handle('text:search', (e, { q, limit }) => {
-    const lim = Math.min(100, Math.max(1, Number(limit) || 30));   // 会审 DGO6-05：limit 钳制，防渲染层传大值放大 snippet 读盘
+    const lim = Math.min(100, Math.max(1, Number(limit) || 30));   // limit 钳制，防渲染层传大值放大 snippet 读盘
     return { ok: true, results: textindex.search(q, lim), stats: textindex.stats() };
   });
   // #70④ 组级 AI 摘要：收集组内转写文稿（cap 20 篇 × 8k 字）→ AI 结构化总结 → 存组目录 AI摘要-日期.md
   ipcMain.handle('lib:summarize', async (e, { key, paths }) => {
     if (!ai.ready()) return { ok: false, reason: '请先在设置页配置 AI 接口（地址 / Key / 模型）' };
-    // 会审 DGO6-06：不再全量重扫媒体库——文件清单由渲染层传入，逐个过 insideOutDir 校验防路径注入
+    // 不再全量重扫媒体库——文件清单由渲染层传入，逐个过 insideOutDir 校验防路径注入
     const list = (Array.isArray(paths) ? paths : []).map(p => insideOutDir(p)).filter(Boolean);
     if (!list.length) return { ok: false, reason: '分组不存在或没有有效文件' };
     const txts = [];
@@ -737,7 +737,7 @@ app.whenReady().then(() => {
     if (!txts.length) return { ok: false, reason: '该组还没有转写文稿——先点「📝 全组转写」' };
     const content = txts.map(t => `## ${t.name.replace(/\.[^.]+$/, '')}\n${t.text}`).join('\n\n');
     const md = await ai.run('groupSummary', content);
-    // 会审 DGO6-06：组目录取第一个有效 path 的 dirname
+    // 组目录取第一个有效 path 的 dirname
     const outFile = path.join(path.dirname(list[0]), `AI摘要-${new Date().toISOString().slice(0, 10)}.md`);
     fs.writeFileSync(outFile, md, 'utf-8');
     log.info('ai', `组级摘要完成（${key || '未分组'}，${txts.length} 篇）→ ${outFile}`);
@@ -767,7 +767,7 @@ app.whenReady().then(() => {
     for (const url of (Array.isArray(urls) ? urls : [urls])) {
       if (!url || !url.trim()) continue;
       const meta = await identify.identify(url.trim());
-      if (meta.engine === 'invalid') {   // 会审 P2：识别失败的链接不再入队跑一遍注定失败的任务
+      if (meta.engine === 'invalid') {   // 识别失败的链接不再入队跑一遍注定失败的任务
         invalid.push({ url: url.trim(), reason: meta.reason || '无法识别' });
         continue;
       }
@@ -798,7 +798,7 @@ app.whenReady().then(() => {
     if (!v.ok) return { ok: false, reason: '目录不可写：' + v.reason };
     const s = settings.set({ outDir: dir });
     // 即时切换新任务的输出目录（运行中任务沿用开始时的目录）。
-    // 注意：必须调模块级 configure（支持 outDir/proxy/minFreeMB 热更新），不能调实例 queue.configure/reconfigure——DownloadQueue 没有实例方法（会审 P0 实锤，DGO6-Q7 二次实锤）
+    // 注意：必须调模块级 configure（支持 outDir/proxy/minFreeMB 热更新），不能调实例 queue.configure/reconfigure——DownloadQueue 没有实例方法
     configure({ outDir: dir });
     library.configure({ outDir: dir, sourceGet: p => source.get(p) });   // 换目录后来源索引照常可用（按绝对路径匹配）
     return { ok: true, outDir: s.outDir };
@@ -870,7 +870,7 @@ app.whenReady().then(() => {
     } catch (e) { log.warn('textindex', '索引更新失败: ' + e.message); }
     return r;
   });
-  // 路径必须落在下载目录内（会审 P1：startsWith 前缀匹配可被 downloads-evil 同前缀路径绕过，改 path.relative）
+  // 路径必须落在下载目录内（startsWith 前缀匹配可被 downloads-evil 同前缀路径绕过，改 path.relative）
   // 目录本身也放行（rel === ''）：订阅卡片的「打开下载文件夹」用
   function insideOutDir(p) {
     const outDir = path.resolve(settings.get().outDir).toLowerCase();
@@ -890,7 +890,7 @@ app.whenReady().then(() => {
     return { ok: true, ready: ai.ready() };
   });
   // 对已转写的媒体文件跑 AI：读同名 .txt（或 .srt），结果存同名 .ai.md
-  // 会审 DGO-005：补 insideOutDir 校验（同文件其他文件操作都有，唯独这里漏了 → 越界读写）
+  // 补 insideOutDir 校验（同文件其他文件操作都有，唯独这里漏了 → 越界读写）
   ipcMain.handle('ai:run', async (e, { p, task }) => {
     try {
       const base = String(p || '').replace(/\.[^.]+$/, '');
@@ -907,7 +907,7 @@ app.whenReady().then(() => {
   });
 
   // 打开外部链接（订阅「源头已删除」明细点回源用）：白名单域名，防渲染层被诱导开任意 URL。
-  // 会审 T2b：改用 URL 解析锚定主机名——原前缀正则可被 https://evil-bilibili.com/ 这类字符串绕过
+  // 改用 URL 解析锚定主机名——原前缀正则可被 https://evil-bilibili.com/ 这类字符串绕过
   ipcMain.handle('app:openExternal', (e, url) => {
     let u = null;
     try { u = new URL(String(url || '')); } catch (err) { return { ok: false, reason: '非白名单链接' }; }
@@ -934,7 +934,7 @@ app.whenReady().then(() => {
   });
 
   // ===== 订阅（RSS）=====
-  // 会审 B7：串行化队列——定时轮/手动检查/添加订阅触发的首检全部排队执行，不再互相吞掉。
+  // 串行化队列——定时轮/手动检查/添加订阅触发的首检全部排队执行，不再互相吞掉。
   // 原实现用 _checkingSubs 布尔互斥，冲突时静默 return []：订阅添加触发的首检被吞，基线建立延迟到下个 10 分钟轮
   let _subChain = Promise.resolve([]);
   function checkAllSubs(onlyId = null) {
@@ -959,7 +959,7 @@ app.whenReady().then(() => {
         // #70② 频率档位：订阅可设更长间隔（10/30/60 分钟）；手动单查（onlyId）不受限
         if (!onlyId && real.intervalMin > CHECK_INTERVAL_MS / 60000 &&
             Date.now() - (real.lastCheck || 0) < real.intervalMin * 60 * 1000) {
-          results.push({ id: sub.id, name: sub.name, ok: false, reason: '间隔未到（订阅 ⚙ 可调频率）' });   // 会审 DGO6-14：跳过留痕，UI 不再静默
+          results.push({ id: sub.id, name: sub.name, ok: false, reason: '间隔未到（订阅 ⚙ 可调频率）' });   // 跳过留痕，UI 不再静默
           continue;
         }
         try {
@@ -973,7 +973,7 @@ app.whenReady().then(() => {
             const engine = it.type === 'video' ? 'yt-dlp' : 'gallery-dl';
             // #70④：订阅开启「自动转写」→ 新任务带转写标记（下载完自动出字幕/文稿）
             const t = queue.add(subs.itemUrl(s, it), { engine, title: `[订阅] ${s.name} · ${it.text || it.type}`, _subId: s.id, _transcribe: !!real.autoTranscribe });
-            if (t && t.duplicate) return false;   // 会审 B1：同 URL 任务已在队列（可能失败/被取消）→ 不记 known，下轮仍算 fresh 重查，防增量被永久吞掉
+            if (t && t.duplicate) return false;   // 同 URL 任务已在队列（可能失败/被取消）→ 不记 known，下轮仍算 fresh 重查，防增量被永久吞掉
             return true;
           });
           // gdl 新内容：连续序号合并成 range 段（如 1,2,3,7 → 1-3 与 7 两段），gallery-dl 按段拉取
@@ -1121,7 +1121,7 @@ app.whenReady().then(() => {
       return { ok: false, reason: String(e && e.message || e).slice(0, 120) };
     }
   });
-  ipcMain.handle('subs:resume', (e, { id }) => {   // 会审 P1：暂停的订阅可恢复（#70② 起同时清手动/自动两种暂停）
+  ipcMain.handle('subs:resume', (e, { id }) => {   // 暂停的订阅可恢复（#70② 起同时清手动/自动两种暂停）
     const r = subs.get(id);
     if (!r) return { ok: false, reason: '订阅不存在' };
     r.paused = false; r.failStreak = 0; r.userPaused = false;
@@ -1204,7 +1204,7 @@ app.whenReady().then(() => {
   ipcMain.handle('login:state', () => login.loginState(userData));
   ipcMain.handle('login:logout', () => login.logout(userData));
 
-  // 会审 A5：B 站 cookie（SESSDATA）过期检测——Netscape 格式第 5 列是过期时间戳。
+  // B 站 cookie（SESSDATA）过期检测——Netscape 格式第 5 列是过期时间戳。
   // 过期后只能游客身份下载（清晰度降/风控变严），主动提醒重新扫码，别让用户纳闷为啥下载变差了
   function biliCookieExpired() {
     try {
@@ -1231,14 +1231,14 @@ app.whenReady().then(() => {
 
   // ===== 本地转写（Whisper，照 VidBee 方法：模型自选下载 + 镜像切换）=====
   ipcMain.handle('asr:models', () => ({ models: asr.listModels(), mirrors: asr.MIRRORS, activeModel: asr.anyModel() }));
-  ipcMain.handle('asr:setMirror', (e, { id }) => { asr.setMirror(id); settings.set({ asrMirror: id }); return { ok: true }; });   // 会审 B9：镜像选择持久化，重启不再退回默认
+  ipcMain.handle('asr:setMirror', (e, { id }) => { asr.setMirror(id); settings.set({ asrMirror: id }); return { ok: true }; });   // 镜像选择持久化，重启不再退回默认
   // 设默认转写模型（已下载的模型可互相切换）
   ipcMain.handle('asr:setModel', (e, { id }) => {
     const ok = asr.setActive(id);
     return ok ? { ok: true, activeModel: asr.anyModel() } : { ok: false, reason: '该模型尚未下载或不存在' };
   });
   ipcMain.handle('asr:download', (e, { id }) => {
-    // 防双击并发下载（会审 P2）：同一模型同时只允许一个下载任务
+    // 防双击并发下载（同一模型同时只允许一个下载任务
     if (_asrDownloading.has(id)) return { ok: false, reason: '该模型正在下载中' };
     _asrDownloading.add(id);
     return asr.downloadModel(id, pct => {
@@ -1246,7 +1246,7 @@ app.whenReady().then(() => {
     }).finally(() => _asrDownloading.delete(id));
   });
   ipcMain.handle('asr:transcribe', (e, { filePath }) => {
-    const resolved = insideOutDir(filePath);   // 会审 P1：只许转写下载目录内的媒体（防任意文件读取/CPU 滥用）
+    const resolved = insideOutDir(filePath);   // 只许转写下载目录内的媒体（防任意文件读取/CPU 滥用）
     if (!resolved) return { ok: false, reason: '只允许转写下载目录内的文件' };
     if (!fs.existsSync(resolved)) return { ok: false, reason: '文件不存在' };
     enqueueTranscribe(resolved, 'manual');
@@ -1290,7 +1290,7 @@ app.whenReady().then(() => {
     if (!resolved) return { ok: false, reason: '只允许删除下载目录内的文件' };
     if (!fs.existsSync(resolved)) return { ok: false, reason: '文件不存在（可能已被删除，刷新即可）' };
     try {
-      await shell.trashItem(resolved);   // 会审 B10：回收站失败（如文件被占用）要给出明确反馈，不能静默吞掉
+      await shell.trashItem(resolved);   // 回收站失败（如文件被占用）要给出明确反馈，不能静默吞掉
     } catch (err) {
       return { ok: false, reason: '移入回收站失败（文件可能被占用）：' + String(err.message || err).slice(0, 100) };
     }
@@ -1346,7 +1346,7 @@ app.whenReady().then(() => {
         console.log('[autotest] strategy bilibili:', JSON.stringify({ sleep: st.sleep, level: st.level, threshold: st.breakerThreshold }));
         if (!st.sleep || st.sleep < 3) throw new Error('strategy bilibili sleep invalid');
 
-        // 去重探针：活跃任务同 URL 再 add 必须返回已有项并带 duplicate 标记（会审 P0 行为回归验证）
+        // 去重探针：活跃任务同 URL 再 add 必须返回已有项并带 duplicate 标记（
         const AUDIO_URL = 'https://www.bilibili.com/video/BV1GJ411x7h7';
         const t1 = queue.add(AUDIO_URL, { engine: 'yt-dlp', title: 'autotest-video' });
         const dup = queue.add(AUDIO_URL, { engine: 'yt-dlp', title: 'autotest-dup-probe' });
@@ -1558,7 +1558,7 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   quitting = true;
-  // 会审 P1：杀掉活动引擎子进程——防孤儿 yt-dlp/gallery-dl 与下次启动的重复任务并发写同一文件
+  // 杀掉活动引擎子进程——防孤儿 yt-dlp/gallery-dl 与下次启动的重复任务并发写同一文件
   try {
     if (queue) {
       for (const it of [...queue.items.values()]) {

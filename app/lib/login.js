@@ -39,7 +39,7 @@ function openLoginWindow(userData, onDone) {
     webPreferences: { partition: PARTITION, contextIsolation: true, nodeIntegration: false }
   });
   win.loadURL(LOGIN_URL);
-  // 导航限制（会审 P2）：登录窗口只许访问 B 站域名，防 passport 页外链跳去任意站点
+  // 导航限制（登录窗口只许访问 B 站域名，防 passport 页外链跳去任意站点
   win.webContents.on('will-navigate', (e, url) => {
     if (!/^https:\/\/([a-z0-9-]+\.)*bilibili\.com/i.test(url)) e.preventDefault();
   });
@@ -107,7 +107,7 @@ async function logout(userData) {
     const ses = session.fromPartition(PARTITION);
     const cookies = await ses.cookies.get({ domain: 'bilibili.com' });
     for (const c of cookies) {
-      // 非点前缀域名（如 passport.bilibili.com）不能 slice(1)，否则拼出非法 URL 删不掉（会审 P2 修复）
+      // 非点前缀域名（如 passport.bilibili.com）不能 slice(1)，否则拼出非法 URL 删不掉（
       const host = c.domain.startsWith('.') ? c.domain.slice(1) : c.domain;
       try { await ses.cookies.remove('https://' + host, c.name); } catch (e) {}
     }

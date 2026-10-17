@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<!-- 会审 T2a：CSP——渲染层失守后禁止加载远程脚本/连接外域（本应用全部走 IPC，无需外部资源；
+<!-- CSP——渲染层失守后禁止加载远程脚本/连接外域（本应用全部走 IPC，无需外部资源；
      inline script/事件处理器依赖 unsafe-inline，本地 file:// 页面风险可控）-->
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; frame-src 'none'">
 <title>DGO — 媒体下载与订阅</title>
@@ -119,7 +119,7 @@
   .toast { position:fixed; bottom:18px; left:50%; transform:translateX(-50%); background:var(--txt); color:#fff; font-size:12px; border-radius:var(--r-md); padding:8px 16px; opacity:0; transition:opacity .25s; pointer-events:none; z-index:200; }
   .toast.on { opacity:.92; }
 
-  /* ===== UI 会审修复：键盘可达性 / 表单一致性 / 数字稳定宽度 ===== */
+  /* ===== UI 键盘可达性 / 表单一致性 / 数字稳定宽度 ===== */
   :focus-visible { outline:2px solid var(--acc); outline-offset:2px; }
   button { font-family:inherit; }
   input[type="checkbox"] { accent-color:var(--acc); width:15px; height:15px; vertical-align:-2px; }
@@ -380,7 +380,7 @@ function toast(msg) {
   clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove('on'), 2600);
 }
 
-// UI 会审 P0：键盘可达性——给所有带 onclick 的非按钮元素补 tabindex/role，回车/空格触发
+// UI 键盘可达性——给所有带 onclick 的非按钮元素补 tabindex/role，回车/空格触发
 function a11yEnhance() {
   document.querySelectorAll('[onclick]:not(button):not(a):not(input):not(select):not(textarea):not([tabindex])')
     .forEach(el => { el.setAttribute('tabindex', '0'); el.setAttribute('role', 'button'); });
@@ -394,7 +394,7 @@ let _a11yT = null;
 new MutationObserver(() => { clearTimeout(_a11yT); _a11yT = setTimeout(a11yEnhance, 150); }).observe(document.body, { childList: true, subtree: true });
 document.addEventListener('DOMContentLoaded', a11yEnhance);
 
-// 错误翻译层（会审 P0/P1）：把引擎的工程师语言翻译成用户能懂的行动建议；原文悬停可见
+// 错误翻译层（把引擎的工程师语言翻译成用户能懂的行动建议；原文悬停可见
 function translateError(e) {
   const s = String(e || '');
   if (/412|-352|请求过于频繁|Precondition/i.test(s)) return 'B 站风控限流中：稍等几分钟会自动重试，或到左下角扫码登录后再试';
@@ -428,7 +428,7 @@ function currentOpts() {
   return o;
 }
 function saveOpts() { localStorage.setItem('dgo-opts', JSON.stringify(currentOpts())); }
-// localStorage key 迁移：fetchie-opts → dgo-opts，兼容读旧值（会审 P2）
+// localStorage key 迁移：fetchie-opts → dgo-opts，兼容读旧值（
 try {
   const old = localStorage.getItem('fetchie-opts');
   if (old && !localStorage.getItem('dgo-opts')) localStorage.setItem('dgo-opts', old);
@@ -438,7 +438,7 @@ try { syncPicks(); } catch (e) { console.warn('syncPicks fail:', e.message); }  
 
 let _adding = false;
 async function addUrls() {
-  if (_adding) return;   // 防连点重复入队（会审 P0 修复）
+  if (_adding) return;   // 防连点重复入队（
   const urls = $('urls').value.split('\n').map(s => s.trim()).filter(Boolean);
   if (!urls.length) return toast('先粘贴至少一个链接哦');
   _adding = true;
@@ -726,7 +726,7 @@ async function exportGone() {
 async function doExport() {
   const r = await window.fetchie.settingsExport();
   if (!r.ok) { if (r.reason !== '已取消') toast('导出失败：' + r.reason); return; }
-  toast(`迁移包已导出 ✓（${r.counts.subs} 个订阅，${r.counts.settings} 项设置）— 含 AI Key 明文，请妥善保管`);   // 会审 DGO6-15②：明文 Key 风险提示
+  toast(`迁移包已导出 ✓（${r.counts.subs} 个订阅，${r.counts.settings} 项设置）— 含 AI Key 明文，请妥善保管`);   // 明文 Key 风险提示
 }
 async function doImport() {
   const r = await window.fetchie.settingsImport();
@@ -835,7 +835,7 @@ async function openCookieDir() {
 // ===== 订阅 =====
 let subsItems = [];
 let _goneFilesMap = {};   // subId -> { goneId: [本地文件路径...] }
-let _goneFilesKey = {};   // subId -> 缓存键（gone 清单未变则跳过重扫，会审 DGO6-12：防 renderSubs 并发重复走查）
+let _goneFilesKey = {};   // subId -> 缓存键（gone 清单未变则跳过重扫，防 renderSubs 并发重复走查）
 async function loadSubs() {
   subsItems = await window.fetchie.subsList();
   // #70② 分组过滤下拉：同步分组清单
@@ -868,7 +868,7 @@ async function renderSubs() {
   for (const s of items) {
     const ago = s.lastCheck ? Math.round((Date.now() - s.lastCheck) / 60000) : null;
     if (s.sourceDeleted) {
-      // 会审 DGO6-12：gone 清单未变直接复用缓存，不再每次渲染都发 subsGoneFiles（主进程全目录走查）
+      // gone 清单未变直接复用缓存，不再每次渲染都发 subsGoneFiles（主进程全目录走查）
       const gk = s.id + '|' + (s.gone || []).join(',');
       if (_goneFilesKey[s.id] !== gk) {
         try { const r = await window.fetchie.subsGoneFiles(s.id); _goneFilesMap[s.id] = (r && r.files) || {}; _goneFilesKey[s.id] = gk; } catch (e) {}
@@ -1144,7 +1144,7 @@ function setLibKw(v) {
   // 标题过滤立即反馈；文稿内容检索防抖 400ms（避免每敲一键扫索引）
   renderLibrary();
   _txtSearchTimer = setTimeout(async () => {
-    const q = libKw;   // 会审 DGO6-11：闭包捕获本次查询词，在途旧查询返回后不再覆盖新输入的结果
+    const q = libKw;   // 闭包捕获本次查询词，在途旧查询返回后不再覆盖新输入的结果
     try {
       const r = await window.fetchie.textSearch(q, 50);
       if (libKw !== q) return;
@@ -1173,7 +1173,7 @@ function renderLibrary() {
     el.innerHTML = `<div class="empty">没有匹配「${esc(libKw)}」的媒体</div>`;
     return;
   }
-  // 会审 B3：大库提示——文件多时引导用搜索定位，避免用户翻几千个文件的卡片
+  // 大库提示——文件多时引导用搜索定位，避免用户翻几千个文件的卡片
   const bigNote = !kw && libData.totalFiles > 3000
     ? `<div class="hint" style="margin:0 2px 10px">📦 媒体文件较多（${libData.totalFiles} 个）：用上方搜索框按 UP主 / 站点 / 文件名 快速定位</div>` : '';
   el.innerHTML = bigNote + groups.map(g => {
@@ -1209,7 +1209,7 @@ const jobStates = {};
 function jobStatus(f) {
   const s = jobStates[f.path];
   if (!s) return '';
-  if (s.state === 'running') return ' · 🌐 ' + esc(s.note || '处理中');   // 会审 DGO6-13：note 统一过 esc，防文件名/错误信息注入
+  if (s.state === 'running') return ' · 🌐 ' + esc(s.note || '处理中');   // note 统一过 esc，防文件名/错误信息注入
   if (s.state === 'done') return ' · 🌐 完成（' + esc((s.note || '').replace(/^.*[\\/]/, '')) + '）';
   if (s.state === 'error') return ' · 🌐 <span style="color:var(--red)">失败：' + esc((s.note || '').slice(0, 60)) + '</span>';
   return '';
@@ -1240,7 +1240,7 @@ async function summarizeGroup(key) {
     <div style="font-size:12.5px;color:var(--txt2);margin-bottom:10px">正在把组内转写文稿（最多 20 篇）交给 AI 做结构化总结，长内容约需一两分钟…</div>
     <div id="gsumOut" style="white-space:pre-wrap;font-size:13px;line-height:1.7;background:rgba(127,127,127,.08);border-radius:9px;padding:12px;max-height:46vh;overflow:auto">⏳ 生成中…</div>`);
   try {
-    // 会审 DGO6-06：文件清单由前端 libData 提供，主进程不再全量重扫媒体库
+    // 文件清单由前端 libData 提供，主进程不再全量重扫媒体库
     const r = await window.fetchie.libSummarize(key, g.files.map(f => f.path));
     if (!r.ok) { $('gsumOut').textContent = '失败：' + (r.reason || '未知错误'); return; }
     $('gsumOut').textContent = r.md;
@@ -1271,7 +1271,7 @@ function fmtBytes(b) {
   if (b >= 1024) return (b / 1024).toFixed(0) + ' KB';
   return b + ' B';
 }
-// 会审 DGO-003：补双引号转义（HTML 属性逃逸），单引号/反斜杠转 JS 字符串层
+// 补双引号转义（HTML 属性逃逸），单引号/反斜杠转 JS 字符串层
 function escAttr(s) { return String(s ?? '').replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '&quot;'); }
 function toggleGroup(key) { expandedKey = expandedKey === key ? null : key; renderLibrary(); }
 async function openPath(p) {
@@ -1357,7 +1357,7 @@ async function doUpdate() {
   for (const u of list) {
     toast('正在更新 ' + u.engine + ' …');
     try {
-      // 会审 B4：applyUpdate 失败返回 {ok:false,reason} 而非抛异常，必须判 r.ok，否则失败也提示成功
+      // applyUpdate 失败返回 {ok:false,reason} 而非抛异常，必须判 r.ok，否则失败也提示成功
       const r = await window.fetchie.applyUpdate(u.engine, u.url);
       if (!r || !r.ok) return toast('更新失败：' + ((r && r.reason) || '未知原因'));
       toast(u.engine + ' 已更新到 ' + u.remote);
@@ -1402,7 +1402,7 @@ window.fetchie.snapshot().then(s => { items = s; render(); });
 window.fetchie.subsList().then(list => { subsItems = list || []; refreshNavCounts(); }).catch(() => {});
 loadLibrary(true).catch(() => {});
 
-// 首启引导（会审 P0-5）：只在第一次弹，三步说清核心用法
+// 首启引导（只在第一次弹，三步说清核心用法
 try {
   if (!localStorage.getItem('dgo-onboarded')) {
     localStorage.setItem('dgo-onboarded', '1');

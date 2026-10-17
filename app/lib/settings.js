@@ -27,7 +27,7 @@ function configure({ file, defaultOutDir }) {
 function get() { return { ...data }; }
 function set(patch) {
   const p = { ...(patch || {}) };
-  // 会审 DGO6-08：minFreeMB 写入前归一化（负数/非数字归 0＝关闭检测；与 configure 启动路径同规则）
+  // minFreeMB 写入前归一化（负数/非数字归 0＝关闭检测；与 configure 启动路径同规则）
   if (p.minFreeMB !== undefined) p.minFreeMB = Math.max(0, Math.floor(Number(p.minFreeMB) || 0));
   // 并发/限速归一化（与 configure 同规则，双保险）
   if (p.maxConcurrent !== undefined) p.maxConcurrent = Math.min(5, Math.max(1, Math.floor(Number(p.maxConcurrent) || 2)));

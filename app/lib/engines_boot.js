@@ -56,7 +56,7 @@ const GDL_PIN = { '1.32.15': 'd6c8ac8ffdc9194e90787225e70d0a7c9eeed23dd41c9574e2
 // 自家 Release 兜底源（官方 gallery-dl.exe 原样上传到 DGO Release 资产即生效；github.com URL 自动吃镜像链）
 const SELF_GDL_URL = 'https://github.com/guanyafei00/DGO/releases/latest/download/gallery-dl.exe';
 
-// 会审 DGO-006：期望哈希 fail-closed——pin 表优先，否则拉 Codeberg 官方 SHA256SUMS（覆盖未来新版本，无需发版更新 pin 表）
+// 期望哈希 fail-closed——pin 表优先，否则拉 Codeberg 官方 SHA256SUMS（覆盖未来新版本，无需发版更新 pin 表）
 const _sumsCache = {};   // tag → sha256
 async function gdlExpected(tag) {
   if (GDL_PIN[tag]) return GDL_PIN[tag];
@@ -89,7 +89,7 @@ async function gdlTag() {
 }
 
 // win 解压：PowerShell Expand-Archive（把 zip 内的 ffmpeg.exe 提到 destDir）
-// 会审 T2c：路径里的单引号会截断 PS 字符串（甚至注入命令），PS 单引号串里 '' 才是一个字面单引号
+// 路径里的单引号会截断 PS 字符串（甚至注入命令），PS 单引号串里 '' 才是一个字面单引号
 // v0.1.9 修复：解压出的 ffmpeg-*-essentials_build 目录（含 doc/ 约 500MB）此前从不清理，
 // 每次重下都往安装目录里堆一座垃圾山——复制出 ffmpeg.exe 后整个删掉
 function winExpand(zipPath, destDir) {
@@ -147,7 +147,7 @@ async function ensureEngines(binDir) {
         if (isWin) {
           // 降级链（顺序写死，禁止静默换源；结果带来源标注供 UI 明示）：
           // ① Codeberg 官方 ② 自家 Release 副本（自动吃镜像）③ GitHub official（万一恢复发布）
-          // 会审 DGO-006：三个源都必须过期望哈希（pin 或官方 SHA256SUMS），拿不到期望哈希直接拒绝（fail-closed 防镜像投毒）
+          // 三个源都必须过期望哈希（pin 或官方 SHA256SUMS），拿不到期望哈希直接拒绝（fail-closed 防镜像投毒）
           const dest = path.join(binDir, 'gallery-dl.exe');
           let tag = null;
           try { tag = await gdlTag(); } catch (e) {}

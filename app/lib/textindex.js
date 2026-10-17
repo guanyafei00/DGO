@@ -1,13 +1,13 @@
 // 文稿全文检索（#70 增长③）：转写出的 .txt 内容可搜
 // 实现：2-gram 倒排索引（中文按相邻 2 字切分，英文/数字按词），存 userData/text-index.json。
-// 刻意不引 SQLite（会审决议）：索引文件按需增量重建，千篇量级毫秒级可搜。
+// 刻意不引 SQLite（索引文件按需增量重建，千篇量级毫秒级可搜。
 // 只索引与媒体文件同名的 .txt 转写文稿（base.txt，如「视频 [BV1xx].txt」）。
 const fs = require('fs');
 const path = require('path');
 const { atomicWrite, readJson } = require('./jsonfile');
 
 let FILE = null;
-// 会审 DGO6-01：docs/index 必须是 null 原型对象——普通对象的原型链上有 constructor/toString/hasOwnProperty，
+// docs/index 必须是 null 原型对象——普通对象的原型链上有 constructor/toString/hasOwnProperty，
 // 文稿内容含这些词时 reindex 写入会命中原型键、search 的 `data.index[tk]` 判断被原型污染
 let data = { version: 1, docs: Object.create(null), index: Object.create(null) };   // docs: path → { mtime, title, up, size } ; index: token → [path,...]
 
@@ -92,7 +92,7 @@ function search(q, limit = 30) {
   for (const tk of tokens) {
     const arr = data.index[tk];
     if (!arr || !arr.length) return [];   // 任一 token 无文档 → AND 必空
-    // 会审 DGO6-05：交集改 Set 成员判断——原 `arr.includes(p)` 是 O(C×L) 线性扫，
+    // 交集改 Set 成员判断——原 `arr.includes(p)` 是 O(C×L) 线性扫，
     // 数万文档 × 常用 2-gram 会在主进程同步执行时卡死 IPC；改后每轮 O(C+L)。
     // 始终迭代较短一侧、对较长一侧建 Set：
     if (candidates === null) candidates = new Set(arr);
@@ -116,7 +116,7 @@ function search(q, limit = 30) {
   // snippet：读文件找首个命中位置（cap 30 篇，防大结果集读盘）
   for (const r of results.slice(0, limit)) {
     try {
-      // 会审 DGO6-05：openSync/readSync 只读前 256KB——转写文稿可达数百 KB，整篇同步读会拖慢 IPC；
+      // openSync/readSync 只读前 256KB——转写文稿可达数百 KB，整篇同步读会拖慢 IPC；
       // 尾部截断最多损失一个多字节字符（解码替换），snippet 足够
       const fd = fs.openSync(r.path, 'r');
       let text = '';

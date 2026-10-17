@@ -1,8 +1,8 @@
-// JSON 安全持久化（会审 P0 修复）：
+// JSON 安全持久化（
 //  - atomicWrite: tmp + rename 原子替换，写一半断电不再产生半截文件
 //  - readJson: 类型校验；损坏文件改名 .bad-<ts> 隔离现场，绝不静默覆盖
 //
-// 外部会审（deepseek #2）加固：Windows 下 rename 目标被杀软/读取器瞬时占用时，
+// 外部加固：Windows 下 rename 目标被杀软/读取器瞬时占用时，
 // 旧版直接退化为 copyFileSync——目标文件在拷贝期间存在半截窗口。
 // 现在改为：① rename 短重试（真实 sleep，等瞬时锁释放）② copy 到第二 tmp 后再 rename
 // （最终切换仍原子）③ 全部失败才退化为直接 copy（内容完整但不原子，与旧版行为一致）。

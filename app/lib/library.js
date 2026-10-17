@@ -29,7 +29,7 @@ function fmtSize(bytes) {
   return bytes + ' B';
 }
 
-// 递归扫描（会审 P1 重构）：异步分片让出主线程 + 文件数/深度上限 + 跳过符号链接防循环
+// 递归扫描（异步分片让出主线程 + 文件数/深度上限 + 跳过符号链接防循环
 async function walk(dir, base, out, ctx) {
   if (ctx.files >= ctx.maxFiles || ctx.depth >= ctx.maxDepth) return;
   let entries;

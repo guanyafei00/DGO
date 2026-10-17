@@ -13,7 +13,7 @@ function load() {
   // 必须是数组：损坏/类型不对时坏文件已被隔离为 .bad-*，返回空并让 save 重建
   return readJson(tasksPath, [], Array.isArray);
 }
-// 1s 防抖（会审 P2）：下载高峰每次进度推送都全量同步写盘太重；flushNow 在退出前强制落盘
+// 1s 防抖（下载高峰每次进度推送都全量同步写盘太重；flushNow 在退出前强制落盘
 function save(items) {
   _pendingItems = items;
   if (_saveTimer) return;

@@ -89,7 +89,7 @@ async function translateChunk(blocks, translator, sysHint) {
     const map = parseReplies(out, blocks.length);
     missing = blocks.filter((_, i) => !map.has(i + 1)).map((_, i) => i + 1);
     if (missing.length === 0) return blocks.map((_, i) => map.get(i + 1));
-    // 会审 DGO6-09：每轮失败后都用本轮缺失行重建提示——第三次调用拿到的是最近一轮的缺失清单，
+    // 每轮失败后都用本轮缺失行重建提示——第三次调用拿到的是最近一轮的缺失清单，
     // 而非 attempt 1 的陈旧清单（两轮漏的行可能不同）
     sysHint = `注意：你上次漏译了第 ${missing.join('、')} 条。重新输出全部 ${blocks.length} 行，格式严格为「N|译文」。原文：\n`;
   }

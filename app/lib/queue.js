@@ -8,7 +8,7 @@ const fs = require('fs');
 const strategy = require('./strategy');
 
 let BIN = path.join(__dirname, '..', 'resources', 'bin');
-let ENGINES = null;   // 可写引擎目录（userData/engines）：自更新落这里；spawn 时优先取新版（外部会审 deepseek #9 变体）
+let ENGINES = null;   // 可写引擎目录（userData/engines）：自更新落这里；spawn 时优先取新版
 let COOKIE = path.join(__dirname, '..', 'resources', 'cookies.txt');
 let OUTDIR = null;
 let PROXY = null;
@@ -46,7 +46,7 @@ function isRateLimitError(text) {
   return /\b(412|429)\b|-352|rate.?limit|Too Many Requests|Waiting for \d+ (minutes|seconds)|Precondition Failed|请求过于频繁/i.test(text || '');
 }
 
-// 会审 T4：Windows 下引擎会再 spawn 子进程（yt-dlp→ffmpeg 合并）；只 kill 父进程会留孤儿
+// Windows 下引擎会再 spawn 子进程（yt-dlp→ffmpeg 合并）；只 kill 父进程会留孤儿
 // 继续写同一文件。taskkill /T 连整棵进程树一起杀，失败回落 SIGKILL
 function killTree(child) {
   if (!child) return;
@@ -61,7 +61,7 @@ function killTree(child) {
 }
 
 // #70① 磁盘空间检测：下载目录所在盘剩余 < MIN_FREE_MB 视为不足。
-let WATCHDOG_TOTAL_MIN = 240;   // 下载总时长上限（分钟）：超时杀进程标 error，任务可重试；0=关闭（外部会审 deepseek #1）
+let WATCHDOG_TOTAL_MIN = 240;   // 下载总时长上限（分钟）：超时杀进程标 error，任务可重试；0=关闭（外部
 let WATCHDOG_STALL_MIN = 15;    // 连续无输出判定（分钟）：引擎网络挂死防永久占用队列；0=关闭
 
 // 引擎解析：userData/engines 有自更新新版优先，否则用随包 resources/bin
@@ -93,8 +93,8 @@ class DownloadQueue {
   add(url, meta = {}) {
     const u = String(url || '').trim();
     if (!u) return null;
-    // 查重（会审 P0 修复）：同 URL 活跃任务直接返回已有项并打 duplicate 标记，UI 提示不重复入队
-    // 会审 DGO6-Q7：手工挑安全字段——整包展开会把 _child/_files/_diskTimer/_runSeq 等内部
+    // 查重（同 URL 活跃任务直接返回已有项并打 duplicate 标记，UI 提示不重复入队
+    // 手工挑安全字段——整包展开会把 _child/_files/_diskTimer/_runSeq 等内部
     // 句柄泄漏进 IPC 序列化（spawn 子进程对象/大数组跨进程传递是事故隐患）
     for (const it of this.items.values()) {
       if (it.url === u && ['queued', 'downloading', 'held'].includes(it.status)) {
@@ -137,7 +137,7 @@ class DownloadQueue {
       if (it._directReq) { try { it._directReq.destroy(); } catch (e) {} it._directReq = null; }
       killTree(it._child);
       if (it._wasActive) { this.active = Math.max(0, this.active - 1); it._wasActive = false; }
-      // 会审 DGO6-07：cancel 立即清磁盘巡检 timer（不留 30s 空转；兜底由 timer 自清分支与 close 事件覆盖）
+      // cancel 立即清磁盘巡检 timer（不留 30s 空转；兜底由 timer 自清分支与 close 事件覆盖）
       if (it._diskTimer) { clearInterval(it._diskTimer); it._diskTimer = null; }
       it.status = 'canceled';
       this.tick();
@@ -148,7 +148,7 @@ class DownloadQueue {
   }
 
   // 重试：error/held/canceled/done → queued（重置进度统计，防跨次累加虚高）
-  // 会审 B8：done 也允许重试——doneCard 本来就渲染了 ⟳ 按钮，点了却无响应；gallery-dl 重跑会自动跳过已有文件
+  // done 也允许重试——doneCard 本来就渲染了 ⟳ 按钮，点了却无响应；gallery-dl 重跑会自动跳过已有文件
   retry(id) {
     const it = this.items.get(id);
     if (!it || !['error', 'held', 'canceled', 'done'].includes(it.status)) return false;
@@ -195,8 +195,8 @@ class DownloadQueue {
 
   snapshot() {
     return this.order.map(id => {
-      // 保留 _range（会审修复：先前被剥离导致范围任务崩溃恢复后全量重下）；_files 巨大且只供 onDone 钩子用，不入快照；
-      // 会审 DGO6-Q7：_runSeq 是 run 序号（内部幂等标记），不得泄漏给渲染层
+      // 保留 _range（先前被剥离导致范围任务崩溃恢复后全量重下）；_files 巨大且只供 onDone 钩子用，不入快照；
+      // _runSeq 是 run 序号（内部幂等标记），不得泄漏给渲染层
       const { _child, _wasActive, _files, _diskTimer, _diskHeld, _runSeq, ...rest } = this.items.get(id);
       if (rest.status === 'held') rest.heldRemainMs = strategy.breakerRemainMs(rest.url);
       return rest;
@@ -204,7 +204,7 @@ class DownloadQueue {
   }
 
   push() {
-    this.pruneFinished();   // 会审 P2：终态任务上限淘汰，防长驻内存/tasks.json 无限膨胀
+    this.pruneFinished();   // 终态任务上限淘汰，防长驻内存/tasks.json 无限膨胀
     this.broadcast(this.snapshot());
   }
 
@@ -280,7 +280,7 @@ class DownloadQueue {
   }
 
   run(it) {
-    // 会审 DGO6-07：run 序号——重试/磁盘挂起重跑会再次 run 同一 it，旧 run 的 close/error/磁盘巡检
+    // run 序号——重试/磁盘挂起重跑会再次 run 同一 it，旧 run 的 close/error/磁盘巡检
     // 事件晚到时凭 seq 识别并丢弃，绝不误清新一轮的 timer 或把新任务打成 error
     const seq = (it._runSeq = (it._runSeq || 0) + 1);
     it.status = 'downloading';
@@ -290,7 +290,7 @@ class DownloadQueue {
     this.active++;
     it._wasActive = true;
     const done = (status, extra = {}) => {
-      if (!it._wasActive) return;   // 幂等守卫（会审 P1）：spawn 的 error+close 双触发只算一次
+      if (!it._wasActive) return;   // 幂等守卫（spawn 的 error+close 双触发只算一次
       it.status = status;
       Object.assign(it, extra);
       if (status === 'done' && this.onDone) {
@@ -315,7 +315,7 @@ class DownloadQueue {
     it._child = child;
 
     // #70① 下载中每 30 秒查一次磁盘：写满前主动挂起（杀进程树防半截文件），空间恢复后在 wakeHeld 回队
-    // 外部会审 deepseek #1：同一定时器顺带跑看门狗——总时长超限/连续无输出即杀进程标 error，防引擎挂死永久占用队列
+    // 外部同一定时器顺带跑看门狗——总时长超限/连续无输出即杀进程标 error，防引擎挂死永久占用队列
     it._diskTimer = setInterval(() => {
       if (seq !== it._runSeq || it.status !== 'downloading') { clearInterval(it._diskTimer); it._diskTimer = null; return; }
       const wdReason = this._watchdogReason(it);
@@ -345,7 +345,7 @@ class DownloadQueue {
     child.stdout.on('data', d => this.parseOutput(it, decOut.decode(d, { stream: true })));
     child.stderr.on('data', d => this.parseOutput(it, decErr.decode(d, { stream: true })));
     child.on('error', e => {
-      if (seq !== it._runSeq) return;   // 会审 DGO6-07：旧 run 的 spawn 错误事件，新 run 已接管
+      if (seq !== it._runSeq) return;   // 旧 run 的 spawn 错误事件，新 run 已接管
       // 引擎文件缺失（首启在线引导还没下载完 / 杀软误删）→ 给出可行动的提示而非裸 ENOENT
       clearDiskTimer();
       const msg = /ENOENT|spawn/i.test(String(e)) && !fs.existsSync(args.exe)
@@ -354,7 +354,7 @@ class DownloadQueue {
       done('error', { error: msg });
     });
     child.on('close', code => {
-      if (seq !== it._runSeq) return;   // 会审 DGO6-07：旧 run 的进程退出事件——不得清新一轮的 _diskTimer、不得判结果
+      if (seq !== it._runSeq) return;   // 旧 run 的进程退出事件——不得清新一轮的 _diskTimer、不得判结果
       clearDiskTimer();
       if (!it._wasActive || it.status === 'canceled') return;   // 幂等守卫（含 cancel 后的 close）
       if (code === 0) {

@@ -43,7 +43,7 @@ function save() { try { atomicWrite(FILE, JSON.stringify(subs, null, 2)); } catc
 function list() { return subs.map(s => ({ ...s, known: undefined, knownCount: (s.known || []).length, goneSeen: undefined })); }
 function get(id) { return subs.find(s => s.id === id); }
 
-// （cookieHeader 已移除：全项目无调用的死代码，会审清理）
+// （cookieHeader 已移除：全项目无调用的死代码，
 
 function getJson(url, headers = {}) {
   return new Promise((resolve, reject) => {
@@ -98,7 +98,7 @@ function add(url, name) {
     id: 's' + Date.now().toString(36), url: c.url || url.trim(),
     kind: c.kind, uid: c.uid || null, handle: c.handle || null, name: name || ('订阅 ' + (subs.length + 1)),
     lastCheck: 0, lastNew: 0, known: [], checked: 0,
-    autoBackfill: false,   // 会审 DGO-002：是否回溯历史由添加后的确认弹窗决定（用户拒绝必须生效，不许 10 分钟后偷跑）
+    autoBackfill: false,   // 是否回溯历史由添加后的确认弹窗决定（用户拒绝必须生效，不许 10 分钟后偷跑）
     group: '',             // #70②：分组名（空=未分组）
     intervalMin: 0,        // #70②：检查频率档位（0=跟随全局 10 分钟；可选 10/30/60）
     userPaused: false,     // #70②：用户手动暂停（与连续失败自动暂停 paused 区分）
@@ -300,7 +300,7 @@ function fetchViaGdl(url, maxItems = 20) {
       if (!items.length) {
         const em = (err.split('\n').find(l => /error/i.test(l)) || '').trim();
         if (em) return reject(new Error(em.slice(0, 120)));
-        // 会审 DGO-008：退出码非 0 且无内容 = 拉取失败，绝不能当「空清单」把存量全判成删帖
+        // 退出码非 0 且无内容 = 拉取失败，绝不能当「空清单」把存量全判成删帖
         if (code !== 0) return reject(new Error('gallery-dl 退出码 ' + code + '（网络波动或 cookie 失效，下轮重试）'));
       }
       resolve(items);
@@ -321,7 +321,7 @@ function refreshName(id) {
 // 检查一轮。回调 onNew(sub, item) 通知新内容
 async function checkSub(sub, onNew) {
   let items = null;
-  if (sub.kind === 'bilibili') items = await fetchBiliDynamic(sub.uid, 2);   // 会审 B2：翻 2 页——充电专属图文会占满第一页，投稿视频常被推到第二页
+  if (sub.kind === 'bilibili') items = await fetchBiliDynamic(sub.uid, 2);   // 翻 2 页——充电专属图文会占满第一页，投稿视频常被推到第二页
   else if (sub.kind === 'x') {
     // X 走 gallery-dl：yt-dlp 根本没有用户时间线提取器（--list-extractors 只有单条推文），
     // flat-playlist 必报 Unsupported URL；gallery-dl 的 twitter 提取器原生支持主页时间线，图+视频一起下（需 x.com cookie）
@@ -340,7 +340,7 @@ async function checkSub(sub, onNew) {
   // 旧版拿全量 known（500条）对最新一页（12/20条），老帖滑出列表就被误判删除。
   // 窗口滑动宽容：本轮新增 freshCount 条新帖，会把 lastSeen 最老的 freshCount 条挤出列表（items 最新在前，被挤的在尾部），
   // 剩下的 missing 才算真删除。
-  // gone（源头删除）判定 v3（会审 A2 累积制）：连续 2 轮检查都消失才判定为删除。
+  // gone（源头删除）判定 v3（连续 2 轮检查都消失才判定为删除。
   // 背景：B 站动态接口偶发瞬断/只返回部分列表，单轮「不见了」直接报删帖会误报。
   // 保留 v2 的窗口滑动宽容：本轮新增 freshCount 条新帖会把 lastSeen 最老的 freshCount 条挤出列表（正常滑动，非删除）。
   // goneSeen 记 { n: 连续消失轮数, t: 最近一次判消失的时间 }——id 滑出 lastSeen 窗口后观察不中断，
@@ -395,7 +395,7 @@ async function checkSub(sub, onNew) {
   } else {
     let recorded = 0;
     for (const it of fresh) {
-      // 会审 B1：onNew 返回 false = 调用方判定本条未真正入队（如队列去重命中，而既有任务可能失败/被取消）。
+      // onNew 返回 false = 调用方判定本条未真正入队（如队列去重命中，而既有任务可能失败/被取消）。
       // 此时不记 known——下轮仍算 fresh 重查，防止增量被永久吞掉
       if (onNew && onNew(sub, it) === false) continue;
       known.add(it.id);

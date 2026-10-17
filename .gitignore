@@ -9,11 +9,11 @@ app/node_modules/
 # GPL 合规：安装包不捆绑的二进制（gallery-dl 走 Codeberg 官方源，ffmpeg 走 gyan.dev）
 app/resources/bin/gallery-dl.exe
 app/resources/bin/ffmpeg.exe
-# 凭据/设备指纹文件绝不入库（会审 DGO-019）
+# 凭据/设备指纹文件绝不入库
 app/resources/cookies.txt
 cookies.txt
 
-# 内部文档（会审/调研报告，不对外）
+# 内部文档（调研报告，不对外）
 DGO会审材料_v3.md
 DGO第三次会审报告.md
 DGO竞品调研报告.md
@@ -28,6 +28,11 @@ overview.md
 DGO支持网站名单.md
 风控自适应架构说明.md
 fetchie-rules-site/
+DGO推广计划_v1.md
+DGO推广文案包/
+DGO海报设计/
+DGO视频/
+外部评审价值鉴定.md
 
 # 测试下载物与图标候选稿
 app/gallery-dl/
@@ -52,6 +57,7 @@ app/.npmcache/
 .DS_Store
 
 # 运行时临时文件（DGO6 收尾）：autotest 任务映射 / gdl 编码配置 / 本地装机脚本
-*.tmp
+*.tmp*
 app/resources/gdl-utf8.json
 run_install.py
+dgo-setup-sha.txt

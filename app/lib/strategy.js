@@ -76,7 +76,7 @@ function breakerRemainMs(url) {
 function reportFailure(url, isRateLimit) {
   const key = stateKey(url);
   const m = matchHost(url);
-  // 会审 DGO6-Q7 兜底：validRule 只校验已存在的字段，远程规则可整体省略这三项——
+  // validRule 只校验已存在的字段，远程规则可整体省略这三项——
   // 缺失时必须回落 FALLBACK，否则 Date.now()+undefined=NaN → isBreakered 恒 false，熔断静默失效；
   // backoffLevels 缺失更会在档位升级时直接 TypeError
   const threshold = (m && m.breakerThreshold !== undefined) ? m.breakerThreshold : FALLBACK.breakerThreshold;
@@ -137,7 +137,7 @@ function applyRemoteRules(rules, meta = {}) {
   if (!Array.isArray(rules)) return { applied: 0, total: 0, error: 'rules 必须是数组' };
   const valid = rules.filter(validRule);
   for (const raw of valid) {
-    // 字段白名单：未知字段不进策略层（会审 P2）
+    // 字段白名单：未知字段不进策略层（
     const r = {};
     for (const k of RULE_FIELDS) if (raw[k] !== undefined) r[k] = raw[k];
     // forUrl 的 sleep 取自 backoffLevels[level]：远程只给 sleep 时，把它写进退避序列 0 档（其余档位沿用现有），否则改动不生效

@@ -8,7 +8,7 @@ let BIN = path.join(__dirname, '..', 'resources', 'bin');
 let COOKIE_PATH = path.join(__dirname, '..', 'resources', 'cookies.txt');
 let PROXY = null;
 function setBinDir(dir) { BIN = dir; }
-function setCookiePath(p) { COOKIE_PATH = p; }   // 会审 P1 修复：登录后识别探针也带上 cookie
+function setCookiePath(p) { COOKIE_PATH = p; }   // 登录后识别探针也带上 cookie
 function setProxy(p) { PROXY = p || null; }
 
 // 已知图片/图文站 → gallery-dl（命中即信任，不做网络探测）

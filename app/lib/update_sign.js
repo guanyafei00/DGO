@@ -22,8 +22,8 @@ function verify(j) {
   } catch (e) { return false; }
 }
 
-// 安装包哈希校验（清单里带 sha256 时强制比对；会审 DGO-004：缺失即拒绝，fail-closed）
-// 外部会审 deepseek #10：改流式，110MB 安装包不再整包读进内存
+// 安装包哈希校验（清单里带 sha256 时强制比对；缺失即拒绝，fail-closed）
+// 外部改流式，110MB 安装包不再整包读进内存
 async function sha256ok(filePath, expect) {
   try {
     if (!expect) return false;

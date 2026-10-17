@@ -7,11 +7,11 @@ const fs = require('fs');
 const https = require('https');
 const crypto = require('crypto');
 
-let BIN = null;          // 可写引擎目录（userData/engines）：更新落这里（外部会审 deepseek #9 变体：装到 Program Files 时 resources/bin 只读）
+let BIN = null;          // 可写引擎目录（userData/engines）：更新落这里（装到 Program Files 时 resources/bin 只读）
 let FALLBACK_BIN = null; // 随包目录（resources/bin）：本地版本探测的回退位
 function configure({ binDir, fallbackBinDir }) { BIN = binDir; FALLBACK_BIN = fallbackBinDir || null; }
 
-// 通用超时 GET（会审 P2：GitHub 半开连接不再让检查永久挂死）
+// 通用超时 GET（GitHub 半开连接不再让检查永久挂死）
 function getWithTimeout(url, headers, handler, timeoutMs = 15000) {
   return new Promise((resolve, reject) => {
     const req = https.get(url, { headers }, res => {
@@ -46,7 +46,7 @@ function download(url, dest) {
     const get = (u, redirects = 0) => {
       if (redirects > 5) return reject(new Error('too many redirects'));
       https.get(u, { headers: { 'User-Agent': 'Mozilla/5.0' } }, res => {
-        res.on('error', reject);   // 网络半途断开不再变未捕获异常（会审修复）
+        res.on('error', reject);   // 网络半途断开不再变未捕获异常（
         if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location)
           return get(res.headers.location, redirects + 1);
         if (res.statusCode !== 200) { res.resume(); return reject(new Error('HTTP ' + res.statusCode)); }
@@ -60,7 +60,7 @@ function download(url, dest) {
   });
 }
 
-// 引擎更新白名单（会审 P0 修复）：engine 只许这两个文件名，URL 只许官方发布域名——
+// 引擎更新白名单（engine 只许这两个文件名，URL 只许官方发布域名——
 // 堵死 renderer 被攻破后借 applyUpdate 任意下载/任意路径写 exe 的口子
 const ENGINE_ALLOW = {
   'yt-dlp.exe': /^https:\/\/github\.com\/yt-dlp\/yt-dlp\/releases\/download\//,
@@ -73,7 +73,7 @@ async function latestYtDlp() {
   return { version: tag, url: `https://github.com/yt-dlp/yt-dlp/releases/download/${tag}/yt-dlp.exe` };
 }
 async function latestGalleryDl() {
-  // 会审 T1：releases/latest 可能只有源码资产（v1.32.16 实测无二进制，旧逻辑返回的 URL 404）。
+  // releases/latest 可能只有源码资产（v1.32.16 实测无二进制，旧逻辑返回的 URL 404）。
   // 改为扫描最近 10 个 release，找最近一个带 gallery-dl.exe 的（与 engines_boot.gdlTag 同策略）
   const list = await getJson('https://codeberg.org/api/v1/repos/mikf/gallery-dl/releases?limit=10');
   for (const rel of (Array.isArray(list) ? list : [])) {
@@ -108,7 +108,7 @@ async function checkAll() {
   return out;
 }
 
-// 流式 sha256（外部会审 deepseek #10：大文件不再整包读进内存）
+// 流式 sha256（外部大文件不再整包读进内存）
 function sha256File(file) {
   return new Promise((resolve, reject) => {
     const h = crypto.createHash('sha256');
@@ -143,7 +143,7 @@ async function updateEngine(engine, url) {
   await download(url, tmp);
   const size = fs.existsSync(tmp) ? fs.statSync(tmp).size : 0;
   if (size < 1_000_000) { try { fs.unlinkSync(tmp); } catch (e) {} throw new Error('downloaded file too small: ' + size); }
-  // SHA-256 校验（外部会审 deepseek #4）：引擎是被 spawn 的可执行文件，官方提供校验和就必须验
+  // SHA-256 校验（外部引擎是被 spawn 的可执行文件，官方提供校验和就必须验
   let hashChecked = false;
   const sumsUrl = sumsUrlFor(engine, url);
   if (sumsUrl) {
@@ -163,7 +163,7 @@ async function updateEngine(engine, url) {
     if (fs.existsSync(exe)) fs.unlinkSync(exe);
     fs.renameSync(tmp, exe);
   } catch (e) {
-    // 替换失败必须回滚旧版（会审 P1：先前 unlink 后 rename 失败会让引擎目录损坏）
+    // 替换失败必须回滚旧版（先前 unlink 后 rename 失败会让引擎目录损坏）
     try { if (!fs.existsSync(exe) && fs.existsSync(bak)) fs.copyFileSync(bak, exe); } catch (e2) {}
     try { fs.unlinkSync(tmp); } catch (e2) {}
     throw e;
