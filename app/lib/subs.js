@@ -91,12 +91,67 @@ const GDL_SITES = [
   { re: /instagram\.com\/[A-Za-z0-9_.]+\/?(\?.*)?$/i, name: 'Instagram 用户' },
 ];
 
+// 已知游客态必失败的站点（2026-10-17 实测：pixiv 用户页直接 AuthenticationError 要 refresh-token、
+// instagram graphql 401、x 时间线需登录）——无对应域名 cookie 时添加阶段就告知，
+// 别让用户点完「立即检查」才看到失败，再连点三次触发「连续失败暂停」
+const GUEST_HOSTILE = ['pixiv.net', 'instagram.com', 'twitter.com', 'x.com'];
+// cookies.txt 域清单（add 时一次性读；导入 cookie 后由 main.js 调 resetCookieCache 失效缓存）
+let _cookieDomainsCache = null;
+function cookieDomains() {
+  if (_cookieDomainsCache) return _cookieDomainsCache;
+  const set = [];
+  try {
+    if (COOKIE && fs.existsSync(COOKIE)) {
+      for (const line of fs.readFileSync(COOKIE, 'utf-8').split('\n')) {
+        const t = line.trim();
+        if (!t || (t.startsWith('#') && !t.startsWith('#HttpOnly_'))) continue;
+        const d = (t.startsWith('#HttpOnly_') ? t.slice('#HttpOnly_'.length) : t).split('\t')[0];
+        if (d) set.push(d.replace(/^\./, '').toLowerCase());
+      }
+    }
+  } catch (e) {}
+  _cookieDomainsCache = set;
+  return set;
+}
+function resetCookieCache() { _cookieDomainsCache = null; }
+
+// URL 推导兜底名（添加时即刻命名，不等网络回合）：
+//   instagram.com/nasa → Instagram · nasa；x.com/foo → @foo；pixiv.net/users/6373294 → Pixiv · 6373294
+// 拿到真名后由 adoptName 替换（_auto 标记=自动名，可被覆盖）；拿不到真名就保持这个，远比「订阅 6」清晰
+function fallbackName(url, kind, handle) {
+  let u;
+  try { u = new URL(url); } catch (e) { return null; }
+  const segs = u.pathname.split('/').filter(Boolean).map(s => { try { return decodeURIComponent(s); } catch (e) { return s; } });
+  if (kind === 'x') return handle ? '@' + handle : null;
+  if (kind === 'youtube') {
+    const at = segs.find(s => s.startsWith('@'));
+    if (at) return at;
+    if (segs[0] === 'channel' && segs[1]) return 'YouTube 频道 ' + segs[1].slice(0, 24);
+    if (segs[0] === 'c' && segs[1]) return 'YouTube · ' + segs[1];
+    return null;
+  }
+  if (kind !== 'gdl') return null;
+  const gdlSite = GDL_SITES.find(s => s.re.test(url));
+  const label = String((gdlSite && gdlSite.name) || u.hostname.replace(/^www\./i, '')).replace(/\s*(用户|相册|博客)$/, '');
+  // 结构性段优先：/users/6373294/illustrations 取 users 后的 id，而不是尾段 illustrations
+  let id = '';
+  for (let i = 0; i < segs.length; i++) {
+    if (/^(users?|u|member|members)$/i.test(segs[i]) && segs[i + 1]) { id = segs[i + 1]; break; }
+  }
+  if (!id) id = segs.find(s => /^\d{3,}$/.test(s)) || segs[segs.length - 1] || '';
+  if (!id) return null;
+  return label + ' · ' + String(id).slice(0, 30);
+}
+
 function add(url, name) {
   const c = classify(url.trim());
   if (!c) return { ok: false, reason: '支持 B站UP主/合集、YouTube频道、X用户、Pixiv/微博/Reddit/Instagram/Danbooru 等图站用户页（部分站点需先导入 cookie）' };
+  const auto = name ? null : fallbackName(c.url, c.kind, c.handle);   // 用户没起名 → URL 兜底名（_auto 可被真名替换）
   const sub = {
     id: 's' + Date.now().toString(36), url: c.url || url.trim(),
-    kind: c.kind, uid: c.uid || null, handle: c.handle || null, name: name || ('订阅 ' + (subs.length + 1)),
+    kind: c.kind, uid: c.uid || null, handle: c.handle || null,
+    name: name || auto || ('订阅 ' + (subs.length + 1)),
+    _auto: !!auto,                    // 自动兜底名标记：adoptName 见到就替换（区别于用户手起的名）
     lastCheck: 0, lastNew: 0, known: [], checked: 0,
     autoBackfill: false,   // 是否回溯历史由添加后的确认弹窗决定（用户拒绝必须生效，不许 10 分钟后偷跑）
     group: '',             // #70②：分组名（空=未分组）
@@ -106,23 +161,33 @@ function add(url, name) {
   };
   subs.push(sub);
   save();
+  // 已知游客态必失败的站点：cookie 里没有该域名 → 添加时就提醒（检查只会 401/AuthenticationError）
+  let warning = null;
+  if ((c.kind === 'gdl' || c.kind === 'x') && !name) {
+    let host = '';
+    try { host = new URL(sub.url).hostname.toLowerCase(); } catch (e) {}
+    if (GUEST_HOSTILE.some(h => host.includes(h)) && !cookieDomains().some(d => host.includes(d))) {
+      warning = '该站点需要登录 Cookie 才能检查更新：设置 → Cookie 管理，导入该站点的 cookies.txt 后再点订阅卡片的 ⟳';
+    }
+  }
   // B 站：异步拿真实 UP 主昵称（card 公开接口）；x/gdl：猜主页名（oEmbed / -K 元数据）——拿到就替换占位名
   if (c.kind === 'bilibili' && c.uid && !name) {
     biliName(c.uid).then(n => adoptName(sub.id, n)).catch(() => {});
   } else if ((c.kind === 'gdl' || c.kind === 'x') && !name) {
     guessName(sub.id);
   }
-  return { ok: true, sub: { ...sub, known: undefined } };
+  return { ok: true, sub: { ...sub, known: undefined }, warning };
 }
 
-// 占位名（"订阅 N"）→ 真名替换（仅当还没被认领过）；改名后广播回调（队列标题同步用）
+// 占位名（"订阅 N"）或自动兜底名（_auto）→ 真名替换（仅当还没被用户认领过）；改名后广播回调（队列标题同步用）
 let _onName = null;
 function onNameChange(cb) { _onName = cb; }
 function adoptName(id, n) {
   if (!n) return;
   const s = get(id);
-  if (s && (s.name || '').startsWith('订阅 ')) {
-    s.name = n.slice(0, 40); save();
+  if (!s) return;
+  if ((s.name || '').startsWith('订阅 ') || s._auto) {
+    s.name = String(n).slice(0, 40); s._auto = false; save();   // 真名落定，清自动名标记
     if (_onName) { try { _onName(id, s.name); } catch (e) {} }
   }
 }
@@ -309,10 +374,12 @@ function fetchViaGdl(url, maxItems = 20) {
 }
 
 // 老订阅补救：名字还是占位（如订阅时缺 cookie / API 瞬断）→ 每轮检查前后重试认领。
+// _auto（URL 兜底名）同样要补救——真名到了就换掉「Instagram · nasa」这类临时名
 // 返回 Promise（供入队前 await，标题才带真名）；非占位名/不支持的类型返回 null
 function refreshName(id) {
   const s = get(id);
-  if (!s || !(s.name || '').startsWith('订阅 ')) return null;
+  if (!s) return null;
+  if (!(s.name || '').startsWith('订阅 ') && !s._auto) return null;
   if (s.kind === 'bilibili' && s.uid) return biliName(s.uid).then(n => adoptName(id, n)).catch(() => {});
   if (s.kind === 'gdl' || s.kind === 'x') return guessName(id);
   return null;
@@ -389,8 +456,8 @@ async function checkSub(sub, onNew) {
   if (sub.checked === 0 || !(sub.known || []).length) {
     // 基线：只记录不下载；YouTube 用频道名，B 站由 card API 异步补，x/gdl 由元数据猜名
     sub.known = items.map(it => it.id);
-    if (sub.kind === 'bili-collection' && items.playlistTitle) sub.name = items.playlistTitle.replace(/^合集·/, '');
-    else if (items.channel) sub.name = items.channel;
+    if (sub.kind === 'bili-collection' && items.playlistTitle) { sub.name = items.playlistTitle.replace(/^合集·/, ''); sub._auto = false; }
+    else if (items.channel) { sub.name = items.channel; sub._auto = false; }
     else if (sub.kind === 'gdl' || sub.kind === 'x') guessName(sub.id);   // 加订阅时没名字的（如当时缺 cookie），检查通了再补一次
   } else {
     let recorded = 0;
@@ -441,4 +508,4 @@ function itemUrl(sub, it) {
   return null;
 }
 
-module.exports = { configure, list, get, add, remove, update, checkSub, itemUrl, backfill, setProxy, refreshName, onNameChange, save, classify };
+module.exports = { configure, list, get, add, remove, update, checkSub, itemUrl, backfill, setProxy, refreshName, onNameChange, save, classify, resetCookieCache };

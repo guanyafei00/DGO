@@ -849,6 +849,7 @@ app.whenReady().then(() => {
     readNetscape(r.filePaths[0]);
     try { fs.writeFileSync(target, [...map.values()].join('\n') + '\n'); }
     catch (e) { return { ok: false, reason: e.message }; }
+    subs.resetCookieCache();   // 域清单缓存失效：订阅添加时的「需要 cookie」提醒要按最新文件判断
     return { ok: true, count: map.size };
   });
   ipcMain.handle('cookie:openDir', () => {
@@ -963,8 +964,8 @@ app.whenReady().then(() => {
           continue;
         }
         try {
-          // 占位名（订阅 N）先补救：入队标题才有真名，不再出现「订阅 3」这种标记（bilibili 也在 refreshName 覆盖范围内）
-          if ((real.name || '').startsWith('订阅 ')) { try { await subs.refreshName(real.id); } catch (e) {} }
+          // 占位名/URL 兜底名（订阅 N、Instagram · nasa）先补救：入队标题才有真名，不再出现「订阅 3」这种标记（bilibili 也在 refreshName 覆盖范围内）
+          if ((real.name || '').startsWith('订阅 ') || real._auto) { try { await subs.refreshName(real.id); } catch (e) {} }
           const gdlSeqs = [];   // gallery-dl 型订阅：新内容只有序号没有独立 URL，先收集再合并连续段
           const r = await subs.checkSub(real, (s, it) => {
             if (it.type === 'text') return;   // 纯文字动态无媒体，只记录不入队
@@ -990,6 +991,7 @@ app.whenReady().then(() => {
             }
           }
           real.failStreak = 0;
+          real.lastError = null;   // 检查通过：清失败原因（UI「检查失败」态复位）
           subs.refreshName(real.id);   // 占位名补救（bilibili/gdl/x 都覆盖；已修好的直接跳过）
           // 新订阅自动全量（主人需求：订阅=要全部）：首检建好基线就自动回溯；
           // 队列忙/失败不清标记，下轮检查（10 分钟）自动重试，成功才落盘清除
@@ -1002,9 +1004,13 @@ app.whenReady().then(() => {
           log.info('subs', `检查 ${sub.name}: fresh=${r.fresh} gone=${r.gone} total=${r.total}`);
         } catch (e) {
           real.failStreak = (real.failStreak || 0) + 1;
+          // 失败态显式化：lastCheck 保持旧值不动，另记 lastFailAt/lastError——
+          // 旧行为失败时UI永远显示「尚未检查」，用户根本不知道该站点是缺 cookie 还是网络断了
+          real.lastFailAt = Date.now();
+          real.lastError = String(e.message).slice(0, 120);
           if (real.failStreak >= 3) { real.paused = true; subs.save(); }   // 连续 3 轮失败暂停，防风控硬撞（状态落盘）
-          log.warn('subs', `检查失败 ${sub.name}: ${String(e.message).slice(0, 120)}`);
-          results.push({ id: sub.id, name: sub.name, ok: false, reason: String(e.message).slice(0, 120) });
+          log.warn('subs', `检查失败 ${sub.name}: ${real.lastError}`);
+          results.push({ id: sub.id, name: sub.name, ok: false, reason: real.lastError });
         }
       }
       if (win && !win.isDestroyed()) win.webContents.send('subs:changed', subs.list());

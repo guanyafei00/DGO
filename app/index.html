@@ -160,6 +160,7 @@
 
     <div class="sec-t">⬇️ 任务队列 <span class="cnt" id="q-cnt2">0</span></div>
     <div id="queue"><div class="empty">队列空空如也——贴个链接试试，比如 B 站视频或 UP 主主页</div></div>
+    <div class="hint" style="margin:-2px 0 12px">站点风控冷却中的任务不占下载名额：其他站点的任务会继续下载，同站点任务等冷却结束自动重试（卡片上的 ⛔ 是倒计时）</div>
 
     <div class="sec-t">✅ 已完成 / 失败 <span class="cnt" id="d-cnt">0</span> <span class="x" style="margin-left:auto;cursor:pointer;font-size:12px" onclick="clearFinishedTasks()" title="清空全部已完/失败记录（不删磁盘文件）">🧹 清空记录</span></div>
     <div id="doneList"><div class="empty">下载完成的媒体会出现在这里（UP 主删除源视频不影响已下载文件）</div></div>
@@ -496,6 +497,7 @@ function render() {
   };
 
   const activeCard = t => {
+    if (t.filePath) _filePathMap.set(t.id, t.filePath);   // 多文件任务下载中就有首批落盘文件，先能打开（与 doneCard 同一查表机制）
     const heldNote = t.status === 'held' ? `<span style="color:var(--yellow)">⛔ 站点风控冷却，约 ${heldMin(t.heldRemainMs||0)} 分钟后自动重试</span>` : '';
     return `
     <div class="task">
@@ -505,6 +507,7 @@ function render() {
         <div class="meta"><span>${stName[t.status]} ${t.progress ? '· ' + t.progress.toFixed(0) + '%' : ''}</span>${t.fileCount ? `<span>已收 ${t.fileCount} 个文件</span>` : ''}${t._audio ? '<span>🎧 音频</span>' : ''}${t._subs ? '<span>⬇ 字幕</span>' : ''}${t._transcribe ? `<span>📝 ${asrStatus(t) || '待转写'}</span>` : ''}${heldNote}</div>
         <div class="bar"><i style="width:${t.status==='held'||t.status==='queued'?2:t.progress}%"></i></div>
       </div>
+      ${t.filePath ? `<div class="x" onclick="openFileFolderById('${t.id}')" title="打开文件位置">📂</div>` : ''}
       <div class="x" onclick="cancel('${t.id}')" title="取消">✕</div>
     </div>`;
   };
@@ -855,6 +858,15 @@ function refreshNavCounts() {
   const s = $('s-cnt'); if (s) s.textContent = subsItems.length;
   const l = $('l-cnt'); if (l && libData) l.textContent = libData.groups.length;
 }
+// 订阅检查失败原因 → 人话（gallery-dl 原始报错对用户是黑话：HttpError 401、AuthenticationError…）
+function friendlySubFail(m) {
+  const s = String(m || '');
+  if (/401|Unauthorized|AuthenticationError|refresh-token|PHPSESSID|cookies?\s*(required|expired|invalid)|login/i.test(s)) return '需要登录 Cookie（设置 → Cookie 管理，导入该站点 cookies.txt）';
+  if (/timed?\s?out|ETIMEDOUT|ECONNRESET|ECONNREFUSED|socket hang up/i.test(s)) return '网络超时或中断，稍后自动重试';
+  if (/429|rate.?limit|Too Many/i.test(s)) return '触发站点限流，冷却后自动重试';
+  if (/退出码/i.test(s)) return '引擎异常退出，下轮自动重试';
+  return s.slice(0, 60);
+}
 async function renderSubs() {
   const el = $('subList');
   const sel = $('groupFilter');
@@ -867,6 +879,12 @@ async function renderSubs() {
   const htmls = [];
   for (const s of items) {
     const ago = s.lastCheck ? Math.round((Date.now() - s.lastCheck) / 60000) : null;
+    // 失败态显式化（Q1 主人实证）：旧逻辑失败时 lastCheck 不动 → 永远显示「尚未检查」，
+    // 用户分不清「没查过」和「查了但失败」。lastFailAt 晚于 lastCheck = 最近一次尝试失败
+    const lastFailed = s.lastError && (!s.lastCheck || (s.lastFailAt || 0) > (s.lastCheck || 0));
+    const statusHtml = lastFailed
+      ? `<span style="color:var(--red)" title="${esc(s.lastError)}">检查失败：${esc(friendlySubFail(s.lastError))}</span>`
+      : ago === null ? '尚未检查' : ago + ' 分钟前检查过';
     if (s.sourceDeleted) {
       // gone 清单未变直接复用缓存，不再每次渲染都发 subsGoneFiles（主进程全目录走查）
       const gk = s.id + '|' + (s.gone || []).join(',');
@@ -876,7 +894,7 @@ async function renderSubs() {
     }
     const paused = s.userPaused || s.paused;
     const pausedTag = s.userPaused ? '<span class="st flat">⏸ 已暂停</span>'
-      : s.paused ? '<span class="st error">连续失败暂停</span>' : '';
+      : s.paused ? `<span class="st error" title="${esc('连续 3 次检查失败：' + (s.lastError || '') + '｜点 ▶ 恢复后会重试；缺登录态的站点请先到 设置 → Cookie 管理 导入该站点 cookies.txt')}">连续失败暂停</span>` : '';
     const groupTag = (s.group || '').trim() ? ` <span style="font-size:11px;color:var(--acc2);background:var(--panel2);border-radius:var(--r-xs);padding:1px 6px">${esc(s.group)}</span>` : '';
     const freqTag = s.intervalMin ? ` · 检查频率 ${s.intervalMin} 分钟` : '';
     const atTag = s.autoTranscribe ? ' · <span style="color:var(--acc2)">📝 自动转写</span>' : '';
@@ -886,7 +904,7 @@ async function renderSubs() {
       <div class="t-thumb">📡<span class="eng">${s.kind === 'bilibili' ? 'B站' : s.kind === 'bili-collection' ? '合集' : s.kind === 'x' ? 'X' : s.kind === 'youtube' ? 'YouTube' : s.kind === 'gdl' ? '图站' : '订阅'}</span></div>
       <div class="t-info">
         <div class="name">${esc(s.name)}</div>
-        <div class="meta">${groupTag}${pausedTag ? pausedTag + ' · ' : ''}${ago === null ? '尚未检查' : ago + ' 分钟前检查过'} · 已跟踪 ${s.knownCount} 条${s.lastNew ? ` · 上轮新增 ${s.lastNew}` : ''}${s._pendingBackfill ? ' · <span style="color:var(--acc2)">⏳ 排队待回溯</span>' : ''}${s.autoBackfill ? ' · <span style="color:var(--acc2)">⤓ 自动全量下载中</span>' : ''}${s.kw && s.kw.length ? ' · 🏷 ' + esc(s.kw.join('/')) : ''}${freqTag}${atTag}${goneBadge(s)}</div>
+        <div class="meta">${groupTag}${pausedTag ? pausedTag + ' · ' : ''}${statusHtml} · 已跟踪 ${s.knownCount} 条${s.lastNew ? ` · 上轮新增 ${s.lastNew}` : ''}${s._pendingBackfill ? ' · <span style="color:var(--acc2)">⏳ 排队待回溯</span>' : ''}${s.autoBackfill ? ' · <span style="color:var(--acc2)">⤓ 自动全量下载中</span>' : ''}${s.kw && s.kw.length ? ' · 🏷 ' + esc(s.kw.join('/')) : ''}${freqTag}${atTag}${goneBadge(s)}</div>
       </div>
       <div class="x" onclick="checkSub('${s.id}')" title="立即检查">⟳</div>
       <div class="x" onclick="backfillSub('${s.id}')" title="把 TA 已发布的内容全部加入下载队列">⤓</div>
@@ -1082,6 +1100,7 @@ async function addSub() {
   if (!r.ok) return toast(r.reason);
   $('subUrl').value = '';
   toast('订阅成功，正在记录内容清单…');
+  if (r.warning) toast('⚠ ' + r.warning);   // 缺登录态站点（Pixiv/IG/X 游客态实测必失败）提前告知；卡片上还会常驻失败原因
   loadSubs();
   // 自动跑首轮检查（建立基线，之后的更新才会自动下载）
   try { await window.fetchie.subsCheck(r.sub.id); } catch (e) {}
