@@ -41,7 +41,8 @@ function getText(url) {
     res.on('end', () => resolve(d));
   });
 }
-function download(url, dest) {
+// onProgress(received, total) 可选：引擎下载 20~30MB 要几十秒，没进度条用户以为卡死
+function download(url, dest, onProgress) {
   return new Promise((resolve, reject) => {
     const get = (u, redirects = 0) => {
       if (redirects > 5) return reject(new Error('too many redirects'));
@@ -50,6 +51,13 @@ function download(url, dest) {
         if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location)
           return get(res.headers.location, redirects + 1);
         if (res.statusCode !== 200) { res.resume(); return reject(new Error('HTTP ' + res.statusCode)); }
+        // 停滞超时：连接挂起/半路断开时 https.get 可以永远不触发 error（实测 TLS 被网络层掐时直挂）。
+        // 60s 无任何数据流动就主动断，别让「更新中」卡成无底洞
+        res.setTimeout(60000);
+        res.on('timeout', () => res.destroy(new Error('下载停滞超过 60 秒（网络中断？）')));
+        const total = parseInt(res.headers['content-length'] || '0', 10) || 0;
+        let received = 0;
+        res.on('data', c => { received += c.length; if (onProgress) { try { onProgress(received, total); } catch (e) {} } });
         const f = fs.createWriteStream(dest);
         res.pipe(f);
         f.on('finish', () => f.close(() => resolve(dest)));
@@ -88,7 +96,9 @@ function localVersion(engine) {
     const exe = fs.existsSync(path.join(BIN, engine)) ? path.join(BIN, engine)
       : (FALLBACK_BIN && fs.existsSync(path.join(FALLBACK_BIN, engine)) ? path.join(FALLBACK_BIN, engine) : path.join(BIN, engine));
     if (!fs.existsSync(exe)) return resolve(null);
-    const child = spawn(exe, ['--version'], { windowsHide: true });
+    let child;
+    try { child = spawn(exe, ['--version'], { windowsHide: true }); }
+    catch (e) { return resolve(null); }   // 文件损坏/非 PE：spawn 会同步抛错（实测 errno -4094），不能让它击穿 updateEngine
     let out = '';
     child.stdout.on('data', d => out += d);
     child.on('error', () => resolve(null));
@@ -132,42 +142,64 @@ function sumsUrlFor(engine, url) {
   return m ? 'https://github.com/yt-dlp/yt-dlp/releases/download/' + m[1] + '/SHA2-256SUMS' : null;
 }
 
-// 更新单个引擎：下载 temp → 校验（大小+SHA-256 可得时）→ 备份旧版 → 替换。必须在队列空闲时调用
-async function updateEngine(engine, url) {
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+// 更新单个引擎：下载 temp → 校验（大小+SHA-256 可得时）→ 备份旧版 → 替换。
+// onProgress(received, total) 可选：供 UI 画下载进度条。
+// 占用处理：Windows 下正被下载任务 spawn 的 exe 是锁住的——旧逻辑让用户「等队列完成后更新」，
+// 现在下载随时可点，只让替换这一步等当前引擎进程结束（重试 12 次×10s≈2 分钟，覆盖绝大多数任务时长）；
+// 仍失败则留下 .new 并报错，下次点「更新」检测到 30 分钟内暂存的新版会跳过下载直接换。
+async function updateEngine(engine, url, onProgress) {
   const allowRe = ENGINE_ALLOW[engine];
   if (!allowRe) throw new Error('unknown engine: ' + engine);
   if (typeof url !== 'string' || !allowRe.test(url)) throw new Error('update url not allowed');
   const exe = path.join(BIN, engine);
   const tmp = exe + '.new';
   const bak = exe + '.bak';
-  await download(url, tmp);
-  const size = fs.existsSync(tmp) ? fs.statSync(tmp).size : 0;
-  if (size < 1_000_000) { try { fs.unlinkSync(tmp); } catch (e) {} throw new Error('downloaded file too small: ' + size); }
-  // SHA-256 校验（外部引擎是被 spawn 的可执行文件，官方提供校验和就必须验
+  // 已暂存的新版（上次下载完但没换成）且够新 → 跳过重复下载，直接进替换
+  let staged = false;
+  try { staged = fs.existsSync(tmp) && Date.now() - fs.statSync(tmp).mtimeMs < 30 * 60000 && fs.statSync(tmp).size > 1_000_000; } catch (e) {}
   let hashChecked = false;
-  const sumsUrl = sumsUrlFor(engine, url);
-  if (sumsUrl) {
-    const sumsText = await getText(sumsUrl).catch(() => null);
-    const expect = sumsText ? parseEngineSha(sumsText, engine) : null;
-    if (expect) {
-      const got = await sha256File(tmp);
-      if (got !== expect) {
-        try { fs.unlinkSync(tmp); } catch (e) {}
-        throw new Error('SHA-256 校验失败（期望 ' + expect.slice(0, 12) + '…，实得 ' + got.slice(0, 12) + '…），已丢弃下载');
+  if (!staged) {
+    try { await download(url, tmp, onProgress); }
+    catch (e) {
+      // 半截文件必须删：留在盘上会被 30 分钟内的 staged 快路径当成「完整新版」直接换上（损坏引擎）
+      try { fs.unlinkSync(tmp); } catch (e2) {}
+      throw e;
+    }
+    const size = fs.existsSync(tmp) ? fs.statSync(tmp).size : 0;
+    if (size < 1_000_000) { try { fs.unlinkSync(tmp); } catch (e) {} throw new Error('downloaded file too small: ' + size); }
+    // SHA-256 校验（外部引擎是被 spawn 的可执行文件，官方提供校验和就必须验
+    const sumsUrl = sumsUrlFor(engine, url);
+    if (sumsUrl) {
+      const sumsText = await getText(sumsUrl).catch(() => null);
+      const expect = sumsText ? parseEngineSha(sumsText, engine) : null;
+      if (expect) {
+        const got = await sha256File(tmp);
+        if (got !== expect) {
+          try { fs.unlinkSync(tmp); } catch (e) {}
+          throw new Error('SHA-256 校验失败（期望 ' + expect.slice(0, 12) + '…，实得 ' + got.slice(0, 12) + '…），已丢弃下载');
+        }
+        hashChecked = true;
       }
-      hashChecked = true;
     }
   }
-  if (fs.existsSync(exe)) fs.copyFileSync(exe, bak);
-  try {
-    if (fs.existsSync(exe)) fs.unlinkSync(exe);
-    fs.renameSync(tmp, exe);
-  } catch (e) {
-    // 替换失败必须回滚旧版（先前 unlink 后 rename 失败会让引擎目录损坏）
-    try { if (!fs.existsSync(exe) && fs.existsSync(bak)) fs.copyFileSync(bak, exe); } catch (e2) {}
-    try { fs.unlinkSync(tmp); } catch (e2) {}
-    throw e;
+  // 替换（含占用重试）：unlink 成功但 rename 失败的窗口里必须回滚旧版——
+  // 留空档期会让正在跑的下载任务 ENOENT（引擎文件凭空消失）
+  let swapped = false, lastErr = null;
+  for (let i = 0; i < 12 && !swapped; i++) {
+    try {
+      if (fs.existsSync(exe)) fs.copyFileSync(exe, bak);
+      if (fs.existsSync(exe)) fs.unlinkSync(exe);
+      fs.renameSync(tmp, exe);
+      swapped = true;
+    } catch (e) {
+      lastErr = e;
+      try { if (!fs.existsSync(exe) && fs.existsSync(bak)) fs.copyFileSync(bak, exe); } catch (e2) {}
+      if (i < 11) await sleep(10000);
+    }
   }
+  if (!swapped) throw new Error('新版已下载，但引擎文件正被下载任务占用——当前任务完成后重试即可直接替换（无需重新下载）' + (lastErr ? '：' + String(lastErr.message || lastErr).slice(0, 60) : ''));
   const v = await localVersion(engine);
   return { engine, newVersion: v, backup: bak, hashChecked, installDir: BIN };
 }

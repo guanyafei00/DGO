@@ -71,5 +71,6 @@ contextBridge.exposeInMainWorld('fetchie', {
   logout: () => ipcRenderer.invoke('login:logout'),
   onLibraryRefresh: (cb) => ipcRenderer.on('library:changed', () => cb()),
   onQueue: (cb) => ipcRenderer.on('queue:snapshot', (e, snap) => cb(snap)),
-  onSubs: (cb) => ipcRenderer.on('subs:changed', (e, subs) => cb(subs))
+  onSubs: (cb) => ipcRenderer.on('subs:changed', (e, subs) => cb(subs)),
+  onEngineProgress: (cb) => ipcRenderer.on('engine:progress', (e, d) => cb(d))
 });

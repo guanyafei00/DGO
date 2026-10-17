@@ -350,7 +350,7 @@
 
     <div class="card">
       <h3>🛠 下载引擎 <span class="cnt" style="font-size:11px">yt-dlp · gallery-dl</span></h3>
-      <div class="desc">上游社区每天都在更新风控对抗规则，引擎保持最新 = 下载成功率最高。默认<b>每天自动更新</b>（仅在下载队列空闲时进行，不打断任务）。</div>
+      <div class="desc">上游社区每天都在更新风控对抗规则，引擎保持最新 = 下载成功率最高。默认<b>每天自动更新</b>（仅在下载队列空闲时进行）。手动更新随时可点：<b>下载不占用任务队列名额</b>，只有下发替换时若引擎正被下载任务调用，会等当前任务跑完再换（几秒到几分钟）。</div>
       <div id="engineList"><div class="empty">检查中…</div></div>
       <div class="row" style="margin-bottom:0">
         <label>自动更新</label>
@@ -480,6 +480,12 @@ function render() {
   // —— 分组渲染：按主页名称（订阅名/UP主）聚合，组头箭头展开收起（主人需求）——
   // 旧任务标题里的占位名（订阅 N）是历史快照改不了的，展示时清洗掉（主人反馈：不想再看到「订阅 3」）
   const cleanTitle = t => String(t || '').replace(/^(\[订阅(?:回溯)?\])\s*订阅\s*\d+\s*·?\s*/, '$1 ').trim();
+  // 标题还是 URL（图文/直连任务真名还没来）→ 缩短展示：至少看得出是哪个站的哪条，而不是一长串链接
+  const prettyTitle = t => {
+    const title = cleanTitle(t.title);
+    if (!/^https?:\/\//i.test(title)) return title;
+    return title.replace(/^https?:\/\/(www\.)?/i, '').replace(/[?#].*$/, '').replace(/\/+$/, '').slice(0, 64);
+  };
   const groupOf = t => {
     const m = String(t.title || '').match(/^\[(?:订阅回溯|订阅)\]\s*(.+?)\s*·/);
     if (m) return /^订阅\s*\d+$/.test(m[1]) ? '旧订阅任务' : m[1];   // 历史占位名归并到一个诚实组名
@@ -497,30 +503,32 @@ function render() {
   };
 
   const activeCard = t => {
-    if (t.filePath) _filePathMap.set(t.id, t.filePath);   // 多文件任务下载中就有首批落盘文件，先能打开（与 doneCard 同一查表机制）
+    const openPath = t.filePath || t._destPath;   // gallery-dl 首批落盘文件 / yt-dlp Destination 行——下载途中就能打开所在位置
+    if (openPath) _filePathMap.set(t.id, openPath);
     const heldNote = t.status === 'held' ? `<span style="color:var(--yellow)">⛔ 站点风控冷却，约 ${heldMin(t.heldRemainMs||0)} 分钟后自动重试</span>` : '';
     return `
     <div class="task">
       <div class="t-thumb">${engIcon(t.engine)}<span class="eng">${engName(t.engine)}</span></div>
       <div class="t-info">
-        <div class="name">${esc(cleanTitle(t.title))}</div>
+        <div class="name">${esc(prettyTitle(t))}</div>
         <div class="meta"><span>${stName[t.status]} ${t.progress ? '· ' + t.progress.toFixed(0) + '%' : ''}</span>${t.fileCount ? `<span>已收 ${t.fileCount} 个文件</span>` : ''}${t._audio ? '<span>🎧 音频</span>' : ''}${t._subs ? '<span>⬇ 字幕</span>' : ''}${t._transcribe ? `<span>📝 ${asrStatus(t) || '待转写'}</span>` : ''}${heldNote}</div>
         <div class="bar"><i style="width:${t.status==='held'||t.status==='queued'?2:t.progress}%"></i></div>
       </div>
-      ${t.filePath ? `<div class="x" onclick="openFileFolderById('${t.id}')" title="打开文件位置">📂</div>` : ''}
+      ${openPath ? `<div class="x" onclick="openFileFolderById('${t.id}')" title="打开文件位置">📂</div>` : ''}
       <div class="x" onclick="cancel('${t.id}')" title="取消">✕</div>
     </div>`;
   };
   const doneCard = t => {
-    if (t.filePath) _filePathMap.set(t.id, t.filePath);   // 路径经 map 查表，不走 onclick 内联（反斜杠转义地狱）
+    const openPath = t.filePath || t._destPath;
+    if (openPath) _filePathMap.set(t.id, openPath);   // 路径经 map 查表，不走 onclick 内联（反斜杠转义地狱）
     return `
     <div class="task">
       <div class="t-thumb">${engIcon(t.engine)}<span class="eng">${engName(t.engine)}</span></div>
       <div class="t-info">
-        <div class="name">${esc(cleanTitle(t.title))}</div>
+        <div class="name">${esc(prettyTitle(t))}</div>
         <div class="meta" title="${t.error ? esc(t.error) : ''}">${t.error ? esc(translateError(t.error)) : (t.filePath ? esc(t.filePath) : '')}</div>
       </div>
-      ${t.filePath ? `<div class="x" onclick="openFileFolderById('${t.id}')" title="打开文件位置">📂</div>` : ''}
+      ${openPath ? `<div class="x" onclick="openFileFolderById('${t.id}')" title="打开文件位置">📂</div>` : ''}
       <div class="x" onclick="retryTask('${t.id}')" title="重试">⟳</div>
       <div class="x" onclick="removeTask('${t.id}')" title="删除记录（不删磁盘文件）">🗑</div>
       <div class="st ${t.status}">${stName[t.status]}</div>
@@ -772,8 +780,12 @@ async function loadEngines() {
         <div class="mi">${u.needUpdate ? '⬆️' : '✅'}</div>
         <div class="mt"><b>${u.engine.replace('.exe', '')}</b>
           <div class="d">${u.needUpdate ? `本地 ${u.local || '?'} → 最新 ${u.remote}` : `已是最新（${u.local || u.remote || '?'}）`}</div>
+          <div id="engProg-${u.engine}" style="display:none;margin-top:6px">
+            <div style="height:6px;border-radius:3px;background:var(--panel2);overflow:hidden"><i id="engProgBar-${u.engine}" style="display:block;height:100%;width:0;background:var(--acc2);transition:width .2s"></i></div>
+            <div class="d" id="engProgTxt-${u.engine}" style="margin-top:3px">正在下载新引擎…</div>
+          </div>
         </div>
-        ${u.needUpdate ? `<button type="button" class="btn-mini" style="color:var(--acc2)" onclick="applyEngineUpdate('${u.engine}','${escAttr(u.url)}')">⬇ 更新</button>` : '<span class="dl-state ok">最新</span>'}
+        ${u.needUpdate ? `<button type="button" id="engBtn-${u.engine}" class="btn-mini" style="color:var(--acc2)" onclick="applyEngineUpdate('${u.engine}','${escAttr(u.url)}')">⬇ 更新</button>` : '<span class="dl-state ok">最新</span>'}
       </div>`).join('');
   } catch (e) { $('engineList').innerHTML = `<div class="empty">检查失败（网络原因）</div>`; }
 }
@@ -788,12 +800,35 @@ async function pickLocalEngine() {
   loadEngines();
 }
 async function applyEngineUpdate(engine, url) {
-  toast('下载新引擎中…（约 20~30MB）');
-  const r = await window.fetchie.applyUpdate(engine, url);
-  if (!r.ok) return toast('引擎更新失败：' + (r.reason || r));
-  toast(`引擎已更新到 ${r.newVersion} ✓`);
-  loadEngines();
+  const prog = $('engProg-' + engine), bar = $('engProgBar-' + engine), txt = $('engProgTxt-' + engine), btn = $('engBtn-' + engine);
+  if (btn) btn.style.display = 'none';           // 防连点重复触发更新
+  if (prog) prog.style.display = 'block';
+  if (txt) txt.textContent = '正在下载新引擎…';
+  try {
+    const r = await window.fetchie.applyUpdate(engine, url);
+    if (prog) prog.style.display = 'none';
+    if (!r || !r.ok) {
+      if (btn) btn.style.display = '';
+      return toast('引擎更新失败：' + ((r && r.reason) || '未知原因'));
+    }
+    toast(`引擎已更新到 ${r.newVersion} ✓ 之后的下载立即用上新引擎`);
+    loadEngines();
+  } catch (e) {
+    if (prog) prog.style.display = 'none';
+    if (btn) btn.style.display = '';
+    toast('引擎更新失败：' + (e && e.message ? e.message : e));
+  }
 }
+// 引擎下载进度（主进程 engine:progress 事件）：行内进度条 + MB 计数
+window.fetchie.onEngineProgress(d => {
+  const bar = $('engProgBar-' + d.engine), txt = $('engProgTxt-' + d.engine);
+  const mb = b => (b / 1048576).toFixed(1);
+  if (d.done) { if (txt) txt.textContent = '正在替换引擎文件…（若正被任务调用会稍等）'; return; }
+  if (bar && d.pct != null) bar.style.width = d.pct + '%';
+  if (txt) txt.textContent = d.total
+    ? `下载中 ${mb(d.received)} / ${mb(d.total)} MB（${d.pct}%）`
+    : `下载中 ${mb(d.received)} MB…`;
+});
 async function saveEngineAuto(on) {
   await window.fetchie.setEngineAuto(on);
   toast(on ? '已开启引擎每日自动更新' : '已关闭引擎自动更新');
@@ -1384,7 +1419,7 @@ async function doUpdate() {
     catch (e) { return toast('更新失败：' + e.message); }
   }
   $('updBadge').style.display = 'none';
-  toast('更新完成，重启应用后生效');
+  toast('更新完成，之后的下载立即用上新引擎');
 }
 
 // ===== 风控规则 / B 站登录 =====

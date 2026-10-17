@@ -544,6 +544,21 @@ class DownloadQueue {
       if (!line) continue;
       if (it.engine === 'yt-dlp') {
         if (!line.startsWith('[') && /^[A-Za-z]:\\/.test(line)) { it.filePath = line; if (!it._files.includes(line)) it._files.push(line); continue; }
+        // Destination/Merger 行 = 真实文件名（粘贴入队的任务标题还是 URL，下载半天不知道在下什么——
+        // 拿到文件名就回填：_destPath 供「打开文件夹」用，URL 标题换成文件名）
+        const dm = line.match(/^\[download\]\s+Destination:\s*(.+)$/i) || line.match(/^\[Merger\]\s+Merging formats into\s+"(.+)"$/i);
+        if (dm) {
+          const p0 = dm[1].trim().replace(/^["']|["']$/g, '');
+          if (/^[A-Za-z]:\\/.test(p0)) {
+            it._destPath = p0;   // DASH 分段时这是 .f137 临时名，但目录正确，打开文件夹不受影响
+            if (!it._files.includes(p0)) it._files.push(p0);
+            if (/^https?:\/\//i.test(it.title || '')) {
+              const base = p0.replace(/^.*[\\/]/, '').replace(/\.f\d+\.[a-z0-9]+$/i, '').replace(/\.[a-z0-9]+$/i, '');
+              if (base) it.title = base.slice(0, 80);
+            }
+            continue;
+          }
+        }
         const m = line.match(/\[download\]\s+([\d.]+)%/);
         if (m) it.progress = Math.max(it.progress, parseFloat(m[1]));
         if (line.startsWith('ERROR')) it.error = line;

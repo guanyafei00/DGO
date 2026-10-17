@@ -408,8 +408,9 @@ app.whenReady().then(() => {
   queue = new DownloadQueue(snapshot => {
     if (win && !win.isDestroyed()) win.webContents.send('queue:snapshot', snapshot);
     store.save(snapshot);          // 每次状态变化持久化
-    // 主人需求「排队不拒绝」：队列空闲即启动排队的回溯任务（FIFO，_drainingBackfill 防重入）
-    try { if (queueIdle()) drainBackfills(); } catch (e) {}
+    // 回溯补位兜底：回溯并发 3 路（不再等队列全空），有回溯结束即补位；
+    // 队列每次状态变化都顺带判一次（代价仅是个 while 条件，绝大多数时候直接跳过）
+    try { drainBackfills(); } catch (e) {}
     // 媒体库自动刷新：有任务新进 done（排除恢复的存量）
     let freshDone = false;
     const doneTitles = [];
@@ -534,8 +535,17 @@ app.whenReady().then(() => {
   // 引擎更新（风控对抗第一防线）
   ipcMain.handle('engine:checkUpdate', async () => autoupdate.checkAll());
   ipcMain.handle('engine:applyUpdate', async (e, { engine, url }) => {
-    if (queue.active > 0) return { ok: false, reason: '队列运行中，等任务完成后更新' };
-    return autoupdate.updateEngine(engine, url);
+    // 进度直达渲染层（下载 20~30MB 要几十秒，没进度条用户以为卡死）。
+    // 不再拿「队列运行中」挡更新：下载随时可点，只让替换阶段等正被 spawn 的引擎文件解锁
+    // （Windows 锁文件，updateEngine 内部重试等，见 autoupdate.js）
+    const onProgress = (received, total) => {
+      if (win && !win.isDestroyed()) win.webContents.send('engine:progress', { engine, received, total, pct: total ? Math.round(received / total * 100) : null });
+    };
+    try {
+      return await autoupdate.updateEngine(engine, url, onProgress);
+    } finally {
+      if (win && !win.isDestroyed()) win.webContents.send('engine:progress', { engine, done: true });
+    }
   });
 
   // ===== 引擎自动更新：启动 5 分钟后 + 每 24 小时，仅在队列空闲时静默更新 =====
@@ -1136,14 +1146,16 @@ app.whenReady().then(() => {
     return { ok: true };
   });
   // 回溯下载（手动 ⤓ 与「新订阅自动全量」共用）：拉订阅源全部媒体逐条入队（队列内已有同 URL 的自动跳过）
-  // 主人需求「排队不拒绝」：队列忙时不再弹回，进 FIFO 待回溯队列，队列空闲后自动开跑
+  // 主人 2026-10-17 反馈「回溯只能一个一个来」：旧实现 FIFO 要等整个下载队列全空才跑下一个回溯——
+  // A 订阅回溯入队 200 个任务后，B 订阅要等这 200 个全下完才开始拉清单，干等几小时。
+  // 回溯本身只是「拉清单 + 入队」（gdl/x 一次请求搞定，bilibili 全量翻页较重），
+  // 下载并发/风控由队列自己管，没道理串行。改为并发 3 个回溯（bilibili 全量翻页 3 路并行是
+  // 探测风控与等待时长的平衡点），其余进 FIFO 排队，有回溯结束即补位。
   const _pendingBackfills = [];   // sub id FIFO（去重）
-  let _drainingBackfill = false;
-  function queueIdle() {
-    return queue.active === 0 && ![...queue.items.values()].some(x => ['queued', 'downloading', 'held'].includes(x.status));
-  }
+  const MAX_BACKFILL_PARALLEL = 3;
+  let _runningBackfills = 0;
   async function _runBackfillNow(real) {
-    if ((real.name || '').startsWith('订阅 ')) { try { await subs.refreshName(real.id); } catch (e) {} }   // 回溯标题也别带「订阅 N」占位名
+    if ((real.name || '').startsWith('订阅 ') || real._auto) { try { await subs.refreshName(real.id); } catch (e) {} }   // 回溯标题也别带「订阅 N」占位名/URL 兜底名
     let added = 0, skipped = 0;
     // gdl 型订阅：所有项共享同一主页 URL（逐条入队会被同 URL 去重吞掉），整段一个任务即可
     // （gallery-dl 自动翻页拉完整列表全量下载；下载时自动跳过已存在的文件，重复回溯安全）
@@ -1172,23 +1184,28 @@ app.whenReady().then(() => {
     return { ok: true, added, skipped, total: r.total, media: r.media };
   }
   async function drainBackfills() {
-    if (_drainingBackfill) return;
-    _drainingBackfill = true;
-    try {
-      while (_pendingBackfills.length && queueIdle()) {
-        const id = _pendingBackfills.shift();
-        const real = subs.get(id);
-        if (!real) continue;
-        delete real._pendingBackfill;
-        if (win && !win.isDestroyed()) win.webContents.send('subs:changed', subs.list());
-        if (real.userPaused || real.paused) continue;   // 排队期间被暂停：丢弃，不再回溯
-        try { toastMsg('开始回溯：' + real.name + '（排队已轮到）'); await _runBackfillNow(real); }
+    while (_pendingBackfills.length && _runningBackfills < MAX_BACKFILL_PARALLEL) {
+      const id = _pendingBackfills.shift();
+      const real = subs.get(id);
+      if (!real) continue;
+      delete real._pendingBackfill;
+      if (win && !win.isDestroyed()) win.webContents.send('subs:changed', subs.list());
+      if (real.userPaused || real.paused) continue;   // 排队期间被暂停：丢弃，不再回溯
+      _runningBackfills++;
+      (async () => {
+        try { toastMsg('开始回溯：' + real.name + '（并发 ' + _runningBackfills + '/' + MAX_BACKFILL_PARALLEL + '）'); await _runBackfillNow(real); }
         catch (e) { toastMsg('回溯失败：' + real.name + ' — ' + String(e.message || e).slice(0, 80)); }
-      }
-    } finally { _drainingBackfill = false; }
+        finally { _runningBackfills--; drainBackfills(); }   // 腾出位子给排队的回溯
+      })();
+    }
   }
   async function runBackfill(real) {
-    if (queueIdle()) return _runBackfillNow(real);
+    if (_runningBackfills < MAX_BACKFILL_PARALLEL) {
+      // 有空位即刻开跑（不再等下载队列全空——回溯只是拉清单入队，下载限速由队列管）
+      _runningBackfills++;
+      try { return await _runBackfillNow(real); }
+      finally { _runningBackfills--; drainBackfills(); }
+    }
     if (!_pendingBackfills.includes(real.id)) {
       _pendingBackfills.push(real.id);
       real._pendingBackfill = true;   // 瞬态标记：UI 显示「排队待回溯」（不落盘）
